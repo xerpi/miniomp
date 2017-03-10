@@ -1,12 +1,12 @@
 // Type declaration for loop worksharing descriptor
 typedef struct {
-  long start;           // loop bounds and increment 
-  long end;
-  long incr;
+	long start;		// loop bounds and increment
+	long end;
+	long incr;
 
-  int schedule;         // schedule kind for loop
-  long chunk_size;
-  // complete the definition of worksharing descriptor
+	int schedule;		// schedule kind for loop
+	long chunk_size;
+	// complete the definition of worksharing descriptor
 } miniomp_loop_t;
 
 #define ws_STATIC 	0

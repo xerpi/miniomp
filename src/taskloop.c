@@ -13,36 +13,34 @@
 /* Called when encountering a taskloop directive. */
 
 void
-GOMP_taskloop (void (*fn) (void *), void *data, void (*cpyfn) (void *, void *),
-               long arg_size, long arg_align, unsigned flags,
-               unsigned long num_tasks, int priority,
-               long start, long end, long step)
+GOMP_taskloop(void (*fn) (void *), void *data, void (*cpyfn) (void *, void *),
+	      long arg_size, long arg_align, unsigned flags,
+	      unsigned long num_tasks, int priority,
+	      long start, long end, long step)
 {
-    printf("TBI: a taskloop has been encountered, with ");
-    if (flags & GOMP_TASK_FLAG_GRAINSIZE) {
-        printf("grainsize=%ld, ", num_tasks);
-    } else {
-        if (num_tasks == 0) num_tasks = omp_get_num_threads();
-        printf("num_tasks=%ld, ", num_tasks);
-    }
-    printf("I am executing it immediately\n");
-	
-    if (__builtin_expect (cpyfn != NULL, 0))
-        {
-	  char * buf =  malloc(sizeof(char) * (arg_size + arg_align - 1));
-          char *arg = (char *) (((uintptr_t) buf + arg_align - 1)
-                                & ~(uintptr_t) (arg_align - 1));
-          cpyfn (arg, data);
-          ((long *)arg)[0] = start;
-          ((long *)arg)[1] = end;
-          fn (arg);
-        }
-    else
-	{
-          char * buf =  malloc(sizeof(char) * (arg_size + arg_align - 1));
-          memcpy (buf, data, arg_size);
-          ((long *)buf)[0] = start;
-          ((long *)buf)[1] = end;
-          fn (buf);
+	printf("TBI: a taskloop has been encountered, with ");
+	if (flags & GOMP_TASK_FLAG_GRAINSIZE) {
+		printf("grainsize=%ld, ", num_tasks);
+	} else {
+		if (num_tasks == 0)
+			num_tasks = omp_get_num_threads();
+		printf("num_tasks=%ld, ", num_tasks);
+	}
+	printf("I am executing it immediately\n");
+
+	if (__builtin_expect(cpyfn != NULL, 0)) {
+		char *buf = malloc(sizeof(char) * (arg_size + arg_align - 1));
+		char *arg = (char *)(((uintptr_t) buf + arg_align - 1)
+				     & ~(uintptr_t) (arg_align - 1));
+		cpyfn(arg, data);
+		((long *)arg)[0] = start;
+		((long *)arg)[1] = end;
+		fn(arg);
+	} else {
+		char *buf = malloc(sizeof(char) * (arg_size + arg_align - 1));
+		memcpy(buf, data, arg_size);
+		((long *)buf)[0] = start;
+		((long *)buf)[1] = end;
+		fn(buf);
 	}
 }
