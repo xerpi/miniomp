@@ -9,8 +9,7 @@ void parse_env(void)
 {
 	char *env = getenv("OMP_NUM_THREADS");
 	if (env == NULL) {
-		printf
-		    ("Environment variable OMP_NUM_THREADS not defined, setting nthreads_var ICV to number of cores\n");
+		printf("Environment variable OMP_NUM_THREADS not defined, setting nthreads_var ICV to number of cores\n");
 		int procs = (int)sysconf(_SC_NPROCESSORS_ONLN);	// returns the number of cores in system
 		if (procs < 0)
 			miniomp_icv.nthreads_var = 1;

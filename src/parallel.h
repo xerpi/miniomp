@@ -11,7 +11,17 @@ typedef struct {
 	// complete the definition of parallel descriptor
 } miniomp_parallel_t;
 
-extern miniomp_parallel_t *miniomp_parallel;
+typedef struct {
+	int id;
+	// complete the definition of parallel descriptor
+} miniomp_parallel_barrier_t;
+
+typedef struct {
+	int id;
+} miniomp_specific_t;
+
+extern miniomp_parallel_t miniomp_parallel;
+extern miniomp_parallel_barrier_t *miniomp_parallel_barrier;
 
 // Declaration of per-thread specific key
 extern pthread_key_t miniomp_specifickey;
