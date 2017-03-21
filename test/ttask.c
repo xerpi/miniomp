@@ -10,24 +10,24 @@ long result = 0;
 
 void foo()
 {
-#pragma omp parallel
-//#pragma omp single
+	#pragma omp parallel
+	//#pragma omp single
 	{
 		int argum = 1;
-#pragma omp task  shared(result) firstprivate(argum)
+		#pragma omp task  shared(result) firstprivate(argum)
 		for (long i = 0; i < 10; i++) {
-#pragma omp atomic
+			#pragma omp atomic
 			result += argum;
 		}
 
 		for (long i = 0; i < 10; i++) {
 			argum++;
-#pragma omp task shared(result) firstprivate(argum)
-#pragma omp atomic
+			#pragma omp task shared(result) firstprivate(argum)
+			#pragma omp atomic
 			result += argum;
 		}
 
-#pragma omp task firstprivate(result) firstprivate(argum)
+		#pragma omp task firstprivate(result) firstprivate(argum)
 		printf
 		    ("Hello from third task, up to now result=%ld and argum = %d\n",
 		     result, argum);

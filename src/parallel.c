@@ -25,6 +25,10 @@ static void *parallel_worker(void *args)
 
 	parallel->fn(parallel->fn_data);
 
+	/*
+	 * Join the implicit barrier of the parallel clause
+	 */
+
 	// insert all necessary code here for:
 	//   1) save thread-specific data
 	//   2) invoke the per-threads instance of function encapsulating the parallel region
@@ -45,7 +49,7 @@ static void *parallel_barrier_worker(void *args)
 	//   1) save thread-specific data
 	//   2) invoke the per-threads instance of function encapsulating the parallel region
 	//   3) exit the function
-	return (NULL);
+	return NULL;
 }
 
 void

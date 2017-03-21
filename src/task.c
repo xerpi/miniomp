@@ -1,48 +1,98 @@
 #include "libminiomp.h"
 
+#define max(a, b) (((a) > (b)) ? (a) : (b))
+
 miniomp_taskqueue_t *miniomp_taskqueue;
 
-// Initializes the task queue
-miniomp_taskqueue_t *init_task_queue(int max_elements)
+miniomp_taskqueue_t *taskqueue_create(int max_elements)
 {
+	miniomp_taskqueue_t *taskqueue;
+
+	taskqueue = malloc(sizeof(*taskqueue));
+	if (!taskqueue)
+		return NULL;
+
+	taskqueue->queue = malloc(max_elements * sizeof(*taskqueue->queue));
+	if (!taskqueue->queue)
+		goto error_queue_alloc;
+
+	taskqueue->max_elements = max_elements;
+	taskqueue->count = 0;
+	taskqueue->head = 0;
+	taskqueue->tail = 0;
+
+	if (pthread_mutex_init(&taskqueue->mutex, NULL) != 0)
+		goto error_mutex_init;
+
+	return taskqueue;
+
+error_mutex_init:
+	free(taskqueue->queue);
+error_queue_alloc:
+	free(taskqueue);
 	return NULL;
 }
 
-// Checks if the task descriptor is valid
-bool is_valid(miniomp_task_t * task_descriptor)
+void taskqueue_destroy(miniomp_taskqueue_t *taskqueue)
+{
+	pthread_mutex_destroy(&taskqueue->mutex);
+	free(taskqueue->queue);
+	free(taskqueue);
+}
+
+bool task_is_valid(miniomp_task_t *task)
 {
 	return false;
 }
 
-// Checks if the task queue is empty
-bool is_empty(miniomp_taskqueue_t * task_queue)
+bool taskqueue_is_empty(miniomp_taskqueue_t *taskqueue)
 {
+	return taskqueue->count == 0;
+}
+
+bool taskqueue_is_full(miniomp_taskqueue_t *taskqueue)
+{
+	return taskqueue->count == taskqueue->max_elements;
+}
+
+bool taskqueue_enqueue(miniomp_taskqueue_t *taskqueue, miniomp_task_t *task)
+{
+	pthread_mutex_lock(&taskqueue->mutex);
+
+	if (taskqueue_is_full(taskqueue)) {
+		pthread_mutex_unlock(&taskqueue->mutex);
+		return false;
+	}
+
+	taskqueue->queue[taskqueue->tail] = task;
+	taskqueue->count++;
+	taskqueue->tail = (taskqueue->tail + 1) % taskqueue->max_elements;
+
+	pthread_mutex_unlock(&taskqueue->mutex);
+
 	return true;
 }
 
-// Checks if the task queue is full
-bool is_full(miniomp_taskqueue_t * task_queue)
+miniomp_task_t *taskqueue_dequeue(miniomp_taskqueue_t *taskqueue)
 {
-	return false;
+	miniomp_task_t *task;
+
+	pthread_mutex_lock(&taskqueue->mutex);
+
+	if (taskqueue_is_empty(taskqueue)) {
+		pthread_mutex_unlock(&taskqueue->mutex);
+		return NULL;
+	}
+
+	task = taskqueue->queue[taskqueue->head];
+	taskqueue->count--;
+	taskqueue->head = (taskqueue->head + 1) % taskqueue->max_elements;
+
+	pthread_mutex_unlock(&taskqueue->mutex);
+
+	return task;
 }
 
-// Enqueues the task descriptor at the tail of the task queue
-bool enqueue(miniomp_taskqueue_t * task_queue, miniomp_task_t * task_descriptor)
-{
-	return true;
-}
-
-// Dequeue the task descriptor at the head of the task queue
-bool dequeue(miniomp_taskqueue_t * task_queue)
-{
-	return true;
-}
-
-// Returns the task descriptor at the head of the task queue
-miniomp_task_t *first(miniomp_taskqueue_t * task_queue)
-{
-	return NULL;
-}
 
 #define GOMP_TASK_FLAG_UNTIED           (1 << 0)
 #define GOMP_TASK_FLAG_FINAL            (1 << 1)
@@ -65,21 +115,34 @@ miniomp_task_t *first(miniomp_taskqueue_t * task_queue)
 //      7. unsigned flags: untied (1) or not (0)
 
 void
-GOMP_task(void (*fn) (void *), void *data, void (*cpyfn) (void *, void *),
+GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 	  long arg_size, long arg_align, bool if_clause, unsigned flags,
 	  void **depend, int priority)
 {
-	printf
-	    ("TBI: a task has been encountered, I am executing it immediately\n");
-	if (__builtin_expect(cpyfn != NULL, 0)) {
-		char *buf = malloc(sizeof(char) * (arg_size + arg_align - 1));
-		char *arg = (char *)(((uintptr_t) buf + arg_align - 1)
-				     & ~(uintptr_t) (arg_align - 1));
-		cpyfn(arg, data);
-		fn(arg);
-	} else {
-		char *buf = malloc(sizeof(char) * (arg_size + arg_align - 1));
-		memcpy(buf, data, arg_size);
-		fn(buf);
+	miniomp_task_t *task;
+	void *task_data;
+
+	printf("GOMP_task called, size: %d, align: %d\n", arg_size, arg_align);
+
+	task = malloc(sizeof(*task));
+	if (!task) {
+		printf("Error: can't allocate memory for the task\n");
+		return;
 	}
+
+	if (posix_memalign(&task_data, max(arg_align, sizeof(void *)), arg_size)) {
+		printf("Error: can't allocate memory for the task data\n");
+		free(task);
+		return;
+	}
+
+	if (__builtin_expect(cpyfn != NULL, 0))
+		cpyfn(task_data, data);
+	else
+		memcpy(task_data, data, arg_size);
+
+	task->fn = fn;
+	task->data = task_data;
+
+	taskqueue_enqueue(miniomp_taskqueue, task);
 }

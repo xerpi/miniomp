@@ -1,8 +1,10 @@
-/* This structure describes a "task" to be run by a thread.  */
+#include <pthread.h>
+
+#define TASKQUEUE_DEFAULT_SIZE 128
+
 typedef struct {
-	void (*fn) (void *);
-	void (*data);
-	// complete with additional field if needed
+	void (*fn)(void *);
+	void *data;
 } miniomp_task_t;
 
 typedef struct {
@@ -10,20 +12,17 @@ typedef struct {
 	int count;
 	int head;
 	int tail;
-	int first;
-	int lock_queue;
+	pthread_mutex_t mutex;
 	miniomp_task_t **queue;
-	// complete with additional field if needed
 } miniomp_taskqueue_t;
 
 extern miniomp_taskqueue_t *miniomp_taskqueue;
-#define MAXELEMENTS_TQ 128
 
-// funtions to implement basic management operations on taskqueue
-bool is_empty(miniomp_taskqueue_t * task_queue);
-bool is_full(miniomp_taskqueue_t * task_queue);
-bool is_valid(miniomp_task_t * task_descriptor);
-bool enqueue(miniomp_taskqueue_t * task_queue,
-	     miniomp_task_t * task_descriptor);
-bool dequeue(miniomp_taskqueue_t * task_queue);
-miniomp_task_t *first(miniomp_taskqueue_t * task_queue);
+bool task_is_valid(miniomp_task_t *task);
+
+miniomp_taskqueue_t *taskqueue_create(int max_elements);
+void taskqueue_destroy(miniomp_taskqueue_t *taskqueue);
+bool taskqueue_is_empty(miniomp_taskqueue_t *taskqueue);
+bool taskqueue_is_full(miniomp_taskqueue_t *taskqueue);
+bool taskqueue_enqueue(miniomp_taskqueue_t *taskqueue, miniomp_task_t *task);
+miniomp_task_t *taskqueue_dequeue(miniomp_taskqueue_t *taskqueue);
