@@ -14,6 +14,23 @@ miniomp_parallel_barrier_t *miniomp_parallel_barrier;
 // Declaration of per-thread specific key
 pthread_key_t miniomp_specifickey;
 
+static bool parallel_single_finished;
+
+static void parallel_implicit_barrier()
+{
+	miniomp_task_t *task;
+
+	do {
+		task = taskqueue_dequeue(miniomp_taskqueue);
+		if (task_is_valid(task)) {
+			task->fn(task->data);
+			free(task);
+		}
+
+		__sync_synchronize();
+	} while (!parallel_single_finished || task != NULL);
+}
+
 // This is the prototype for the Pthreads starting function
 static void *parallel_worker(void *args)
 {
@@ -25,9 +42,13 @@ static void *parallel_worker(void *args)
 
 	parallel->fn(parallel->fn_data);
 
+	parallel_single_finished = true;
+	__sync_synchronize();
+
 	/*
 	 * Join the implicit barrier of the parallel clause
 	 */
+	parallel_implicit_barrier();
 
 	// insert all necessary code here for:
 	//   1) save thread-specific data
@@ -44,6 +65,8 @@ static void *parallel_barrier_worker(void *args)
 
 	specific.id = barrier->id;
 	pthread_setspecific(miniomp_specifickey, &specific);
+
+	parallel_implicit_barrier();
 
 	// insert all necessary code here for:
 	//   1) save thread-specific data
@@ -83,6 +106,9 @@ GOMP_parallel(void (*fn) (void *), void *data, unsigned num_threads,
 		goto error_key_create;
 	}
 
+	parallel_single_finished = false;
+	__sync_synchronize();
+
 	/*
 	 * Parallel-single thread creation
 	 */
@@ -103,12 +129,6 @@ GOMP_parallel(void (*fn) (void *), void *data, unsigned num_threads,
 				     &miniomp_parallel_barrier[i - 1]);
 	}
 
-
-	/*
-	for (int i = 0; i < num_threads; i++)
-		fn(data);
-	*/
-
 	/*
 	 * Wait for threads to finish
 	 */
@@ -116,8 +136,7 @@ GOMP_parallel(void (*fn) (void *), void *data, unsigned num_threads,
 		ret = pthread_join(miniomp_threads[i], NULL);
 	}
 
-
-	 pthread_key_delete(miniomp_specifickey);
+	pthread_key_delete(miniomp_specifickey);
 
 error_key_create:
 	free(miniomp_parallel_barrier);

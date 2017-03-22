@@ -28,9 +28,7 @@ void foo()
 		}
 
 		#pragma omp task firstprivate(result) firstprivate(argum)
-		printf
-		    ("Hello from third task, up to now result=%ld and argum = %d\n",
-		     result, argum);
+		printf("Hello from third task, up to now result=%ld and argum = %d\n", result, argum);
 	}
 }
 

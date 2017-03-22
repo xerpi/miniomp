@@ -42,6 +42,9 @@ void taskqueue_destroy(miniomp_taskqueue_t *taskqueue)
 
 bool task_is_valid(miniomp_task_t *task)
 {
+	if (task && task->fn)
+		return true;
+
 	return false;
 }
 
@@ -122,7 +125,7 @@ GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 	miniomp_task_t *task;
 	void *task_data;
 
-	printf("GOMP_task called, size: %d, align: %d\n", arg_size, arg_align);
+	printf("GOMP_task called, size: %ld, align: %ld\n", arg_size, arg_align);
 
 	task = malloc(sizeof(*task));
 	if (!task) {
