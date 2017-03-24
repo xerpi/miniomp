@@ -2,6 +2,8 @@
 
 typedef struct {
 	int count;
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
 } miniomp_parallel_shared_data_t;
 
 typedef struct {

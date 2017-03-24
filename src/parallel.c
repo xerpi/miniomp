@@ -32,6 +32,8 @@ static void *parallel_worker_function(void *args)
 
 	worker->fn(worker->fn_data);
 
+	__sync_fetch_and_sub(&worker->shared->count, 1);
+
 	/*
 	 * Join the implicit barrier of the parallel clause
 	 */
@@ -102,7 +104,13 @@ GOMP_parallel(void (*fn)(void *), void *data, unsigned num_threads,
 		goto error_key_create;
 	}
 
-	shared_data->count = 0;
+	/*
+	 * Initialize shared data
+	 */
+	pthread_mutex_init(&shared_data->mutex, NULL);
+	pthread_cond_init(&shared_data->cond, NULL);
+	shared_data->count = 1;
+	__sync_synchronize();
 
 	/*
 	 * Parallel-single thread creation
@@ -133,6 +141,11 @@ GOMP_parallel(void (*fn)(void *), void *data, unsigned num_threads,
 		ret = pthread_join(threads[i], NULL);
 	}
 
+	/*
+	 * Cleanup
+	 */
+	pthread_mutex_destroy(&shared_data->mutex);
+	pthread_cond_destroy(&shared_data->cond);
 	pthread_key_delete(miniomp_specifickey);
 
 error_key_create:
