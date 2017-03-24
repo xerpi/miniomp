@@ -1,27 +1,24 @@
 #include <pthread.h>
 
-// Declaration of array for storing pthread identifiers from pthread_create function
-extern pthread_t *miniomp_threads;
-
-// Type declaration for parallel descriptor (arguments needed to create pthreads)
 typedef struct {
-	void (*fn) (void *);
+	int count;
+} miniomp_parallel_shared_data_t;
+
+typedef struct {
+	int id;
+	void (*fn)(void *);
 	void *fn_data;
-	int id;
-	// complete the definition of parallel descriptor
-} miniomp_parallel_t;
+	miniomp_parallel_shared_data_t *shared;
+} miniomp_parallel_worker_t;
 
 typedef struct {
 	int id;
-	// complete the definition of parallel descriptor
+	miniomp_parallel_shared_data_t *shared;
 } miniomp_parallel_barrier_t;
 
 typedef struct {
 	int id;
 } miniomp_specific_t;
-
-extern miniomp_parallel_t miniomp_parallel;
-extern miniomp_parallel_barrier_t *miniomp_parallel_barrier;
 
 // Declaration of per-thread specific key
 extern pthread_key_t miniomp_specifickey;

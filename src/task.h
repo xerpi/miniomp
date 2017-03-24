@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <pthread.h>
 
 #define TASKQUEUE_DEFAULT_SIZE 128
