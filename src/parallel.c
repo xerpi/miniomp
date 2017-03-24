@@ -18,7 +18,7 @@ static void parallel_implicit_barrier(miniomp_parallel_shared_data_t *shared)
 
 		__sync_fetch_and_sub(&shared->count, 1);
 		__sync_synchronize();
-	} while (shared->count > 0 && task != NULL);
+	} while (shared->count > 0 || task != NULL);
 }
 
 // This is the prototype for the Pthreads starting function
