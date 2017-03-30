@@ -148,4 +148,9 @@ GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 	task->data = task_data;
 
 	taskqueue_enqueue(miniomp_taskqueue, task);
+
+	/*
+	 * Wake waiting threads at the implicit parallel barrier
+	 */
+	pthread_cond_signal(&miniomp_global_data.shared->cond);
 }

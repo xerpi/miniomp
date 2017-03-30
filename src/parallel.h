@@ -2,6 +2,7 @@
 
 typedef struct {
 	int count;
+	bool done;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 } miniomp_parallel_shared_data_t;
@@ -22,9 +23,13 @@ typedef struct {
 	int id;
 } miniomp_specific_t;
 
-// Declaration of per-thread specific key
-extern pthread_key_t miniomp_specifickey;
+typedef struct {
+	miniomp_parallel_shared_data_t *shared;
+} miniomp_parallel_global_data_t;
 
-// Functions implemented in this module
+extern pthread_key_t miniomp_specifickey;
+extern miniomp_parallel_global_data_t miniomp_global_data;
+
+
 void GOMP_parallel(void (*fn) (void *), void *data, unsigned num_threads,
 		   unsigned int flags);

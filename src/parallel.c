@@ -1,24 +1,37 @@
 #include "libminiomp.h"
 
-// Declaration of per-thread specific key
 pthread_key_t miniomp_specifickey;
+miniomp_parallel_global_data_t miniomp_global_data;
 
 static void parallel_implicit_barrier(miniomp_parallel_shared_data_t *shared)
 {
-	miniomp_task_t *task;
-
 	do {
+		miniomp_task_t *task;
+
 		__sync_fetch_and_add(&shared->count, 1);
 
 		task = taskqueue_dequeue(miniomp_taskqueue);
 		if (task_is_valid(task)) {
 			task->fn(task->data);
+			__sync_fetch_and_sub(&shared->count, 1);
 			free(task);
+		} else {
+			if (__sync_fetch_and_sub(&shared->count, 1) == 1) {
+				shared->done = 1;
+				__sync_synchronize();
+				pthread_cond_broadcast(&shared->cond);
+			} else {
+				pthread_mutex_lock(&shared->mutex);
+				__sync_synchronize();
+				if (!shared->done) {
+					pthread_cond_wait(&shared->cond,
+							  &shared->mutex);
+				}
+				pthread_mutex_unlock(&shared->mutex);
+			}
 		}
-
-		__sync_fetch_and_sub(&shared->count, 1);
 		__sync_synchronize();
-	} while (shared->count > 0 || task != NULL);
+	} while (!shared->done);
 }
 
 // This is the prototype for the Pthreads starting function
@@ -109,8 +122,14 @@ GOMP_parallel(void (*fn)(void *), void *data, unsigned num_threads,
 	 */
 	pthread_mutex_init(&shared_data->mutex, NULL);
 	pthread_cond_init(&shared_data->cond, NULL);
+	shared_data->done = false;
 	shared_data->count = 1;
 	__sync_synchronize();
+
+	/*
+	 * Set parallel global libminiomp data
+	 */
+	miniomp_global_data.shared = shared_data;
 
 	/*
 	 * Parallel-single thread creation
