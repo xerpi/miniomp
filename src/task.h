@@ -13,7 +13,6 @@ typedef struct {
 	int count;
 	int head;
 	int tail;
-	pthread_mutex_t mutex;
 	miniomp_task_t **queue;
 } miniomp_taskqueue_t;
 

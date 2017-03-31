@@ -21,13 +21,8 @@ miniomp_taskqueue_t *taskqueue_create(int max_elements)
 	taskqueue->head = 0;
 	taskqueue->tail = 0;
 
-	if (pthread_mutex_init(&taskqueue->mutex, NULL) != 0)
-		goto error_mutex_init;
-
 	return taskqueue;
 
-error_mutex_init:
-	free(taskqueue->queue);
 error_queue_alloc:
 	free(taskqueue);
 	return NULL;
@@ -35,7 +30,6 @@ error_queue_alloc:
 
 void taskqueue_destroy(miniomp_taskqueue_t *taskqueue)
 {
-	pthread_mutex_destroy(&taskqueue->mutex);
 	free(taskqueue->queue);
 	free(taskqueue);
 }
@@ -60,18 +54,12 @@ bool taskqueue_is_full(miniomp_taskqueue_t *taskqueue)
 
 bool taskqueue_enqueue(miniomp_taskqueue_t *taskqueue, miniomp_task_t *task)
 {
-	pthread_mutex_lock(&taskqueue->mutex);
-
-	if (taskqueue_is_full(taskqueue)) {
-		pthread_mutex_unlock(&taskqueue->mutex);
+	if (taskqueue_is_full(taskqueue))
 		return false;
-	}
 
 	taskqueue->queue[taskqueue->tail] = task;
 	taskqueue->count++;
 	taskqueue->tail = (taskqueue->tail + 1) % taskqueue->max_elements;
-
-	pthread_mutex_unlock(&taskqueue->mutex);
 
 	return true;
 }
@@ -80,18 +68,12 @@ miniomp_task_t *taskqueue_dequeue(miniomp_taskqueue_t *taskqueue)
 {
 	miniomp_task_t *task;
 
-	pthread_mutex_lock(&taskqueue->mutex);
-
-	if (taskqueue_is_empty(taskqueue)) {
-		pthread_mutex_unlock(&taskqueue->mutex);
+	if (taskqueue_is_empty(taskqueue))
 		return NULL;
-	}
 
 	task = taskqueue->queue[taskqueue->head];
 	taskqueue->count--;
 	taskqueue->head = (taskqueue->head + 1) % taskqueue->max_elements;
-
-	pthread_mutex_unlock(&taskqueue->mutex);
 
 	return task;
 }
@@ -124,8 +106,9 @@ GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 {
 	miniomp_task_t *task;
 	void *task_data;
+	bool enqueued;
 
-	printf("GOMP_task called, size: %ld, align: %ld\n", arg_size, arg_align);
+	//printf("GOMP_task called, size: %ld, align: %ld\n", arg_size, arg_align);
 
 	task = malloc(sizeof(*task));
 	if (!task) {
@@ -147,10 +130,20 @@ GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 	task->fn = fn;
 	task->data = task_data;
 
-	taskqueue_enqueue(miniomp_taskqueue, task);
+	pthread_mutex_lock(&miniomp_global_data.shared->mutex);
 
-	/*
-	 * Wake waiting threads at the implicit parallel barrier
-	 */
-	pthread_cond_signal(&miniomp_global_data.shared->cond);
+	enqueued = taskqueue_enqueue(miniomp_taskqueue, task);
+	if (enqueued) {
+		/*
+		 * Wake waiting threads at the implicit parallel barrier
+		 */
+		pthread_cond_signal(&miniomp_global_data.shared->cond);
+	} else {
+		fn(data);
+		free(task);
+	}
+
+
+	pthread_mutex_unlock(&miniomp_global_data.shared->mutex);
+
 }
