@@ -83,7 +83,7 @@ void mandelbrot(int height,
 #endif
 {
 	/* Calculate points and save/display */
-#pragma omp for schedule(dynamic,100) private(col)
+	#pragma omp for schedule(dynamic,100) private(col)
 	for (row = 0; row < height; ++row) {
 		//#pragma omp for schedule(dynamic,100)
 		for (col = 0; col < width; ++col) {
@@ -115,7 +115,7 @@ void mandelbrot(int height,
 			//printf("%d %d %d\n", row, col, k);
 #if _DISPLAY_
 			/* Scale color and display point  */
-#pragma omp critical
+			#pragma omp critical
 			{
 				long color =
 				    (long)((k - 1) * scale_color) + min_color;
@@ -241,10 +241,10 @@ int main(int argc, char *argv[])
 #endif
 
 	double stamp;
-#pragma omp parallel
+	#pragma omp parallel
 	{
 		/* Start timing */
-#pragma omp single
+		#pragma omp single
 		{
 			START_COUNT_TIME;
 		}
@@ -259,7 +259,7 @@ int main(int argc, char *argv[])
 #endif
 
 		/* End timing  */
-#pragma omp single
+		#pragma omp single
 		{
 			STOP_COUNT_TIME("Total execution time");
 		}
