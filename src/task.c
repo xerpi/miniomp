@@ -4,6 +4,46 @@
 
 miniomp_taskqueue_t *miniomp_taskqueue;
 
+struct miniomp_task_t {
+	void (*fn)(void *);
+	void *data;
+};
+
+struct miniomp_taskqueue_t {
+	int max_elements;
+	int count;
+	int head;
+	int tail;
+	miniomp_task_t **queue;
+};
+
+miniomp_task_t *task_create(void (*fn)(void *), void *data)
+{
+	miniomp_task_t *task = malloc(sizeof(*task));
+	if (!task)
+		return NULL;
+
+	task->fn = fn;
+	task->data = data;
+
+	return task;
+}
+
+void task_destroy(miniomp_task_t *task)
+{
+	free(task);
+}
+
+bool task_is_valid(const miniomp_task_t *task)
+{
+	return task && task->fn;
+}
+
+void task_run(const miniomp_task_t *task)
+{
+	task->fn(task->data);
+}
+
 miniomp_taskqueue_t *taskqueue_create(int max_elements)
 {
 	miniomp_taskqueue_t *taskqueue;
@@ -21,13 +61,8 @@ miniomp_taskqueue_t *taskqueue_create(int max_elements)
 	taskqueue->head = 0;
 	taskqueue->tail = 0;
 
-	if (pthread_mutex_init(&taskqueue->mutex, NULL) != 0)
-		goto error_mutex_init;
-
 	return taskqueue;
 
-error_mutex_init:
-	free(taskqueue->queue);
 error_queue_alloc:
 	free(taskqueue);
 	return NULL;
@@ -35,43 +70,28 @@ error_queue_alloc:
 
 void taskqueue_destroy(miniomp_taskqueue_t *taskqueue)
 {
-	pthread_mutex_destroy(&taskqueue->mutex);
 	free(taskqueue->queue);
 	free(taskqueue);
 }
 
-bool task_is_valid(miniomp_task_t *task)
-{
-	if (task && task->fn)
-		return true;
-
-	return false;
-}
-
-bool taskqueue_is_empty(miniomp_taskqueue_t *taskqueue)
+bool taskqueue_is_empty(const miniomp_taskqueue_t *taskqueue)
 {
 	return taskqueue->count == 0;
 }
 
-bool taskqueue_is_full(miniomp_taskqueue_t *taskqueue)
+bool taskqueue_is_full(const miniomp_taskqueue_t *taskqueue)
 {
 	return taskqueue->count == taskqueue->max_elements;
 }
 
 bool taskqueue_enqueue(miniomp_taskqueue_t *taskqueue, miniomp_task_t *task)
 {
-	pthread_mutex_lock(&taskqueue->mutex);
-
-	if (taskqueue_is_full(taskqueue)) {
-		pthread_mutex_unlock(&taskqueue->mutex);
+	if (taskqueue_is_full(taskqueue))
 		return false;
-	}
 
 	taskqueue->queue[taskqueue->tail] = task;
 	taskqueue->count++;
 	taskqueue->tail = (taskqueue->tail + 1) % taskqueue->max_elements;
-
-	pthread_mutex_unlock(&taskqueue->mutex);
 
 	return true;
 }
@@ -80,18 +100,12 @@ miniomp_task_t *taskqueue_dequeue(miniomp_taskqueue_t *taskqueue)
 {
 	miniomp_task_t *task;
 
-	pthread_mutex_lock(&taskqueue->mutex);
-
-	if (taskqueue_is_empty(taskqueue)) {
-		pthread_mutex_unlock(&taskqueue->mutex);
+	if (taskqueue_is_empty(taskqueue))
 		return NULL;
-	}
 
 	task = taskqueue->queue[taskqueue->head];
 	taskqueue->count--;
 	taskqueue->head = (taskqueue->head + 1) % taskqueue->max_elements;
-
-	pthread_mutex_unlock(&taskqueue->mutex);
 
 	return task;
 }
@@ -127,15 +141,8 @@ GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 
 	printf("GOMP_task called, size: %ld, align: %ld\n", arg_size, arg_align);
 
-	task = malloc(sizeof(*task));
-	if (!task) {
-		printf("Error: can't allocate memory for the task\n");
-		return;
-	}
-
 	if (posix_memalign(&task_data, max(arg_align, sizeof(void *)), arg_size)) {
 		printf("Error: can't allocate memory for the task data\n");
-		free(task);
 		return;
 	}
 
@@ -144,10 +151,16 @@ GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 	else
 		memcpy(task_data, data, arg_size);
 
-	task->fn = fn;
-	task->data = task_data;
+	task = task_create(fn, task_data);
+	if (!task) {
+		free(task_data);
+		printf("Error: can't allocate memory for the task\n");
+		return;
+	}
 
+	pthread_mutex_lock(&miniomp_global_data.shared->mutex);
 	taskqueue_enqueue(miniomp_taskqueue, task);
+	pthread_mutex_unlock(&miniomp_global_data.shared->mutex);
 
 	/*
 	 * Wake waiting threads at the implicit parallel barrier

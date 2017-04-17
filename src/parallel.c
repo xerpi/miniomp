@@ -7,30 +7,35 @@ static void parallel_implicit_barrier(miniomp_parallel_shared_data_t *shared)
 {
 	do {
 		miniomp_task_t *task;
+		int cur_count;
 
-		__sync_fetch_and_add(&shared->count, 1);
+		pthread_mutex_lock(&shared->mutex);
+
+		cur_count = __sync_fetch_and_add(&shared->count, 1);
 
 		task = taskqueue_dequeue(miniomp_taskqueue);
+
+		pthread_mutex_unlock(&shared->mutex);
+
 		if (task_is_valid(task)) {
-			task->fn(task->data);
+			task_run(task);
 			__sync_fetch_and_sub(&shared->count, 1);
-			free(task);
+			task_destroy(task);
 		} else {
-			if (__sync_fetch_and_sub(&shared->count, 1) == 1) {
-				shared->done = 1;
-				__sync_synchronize();
-				pthread_cond_broadcast(&shared->cond);
-			} else {
+			if (cur_count == 0) {
 				pthread_mutex_lock(&shared->mutex);
-				__sync_synchronize();
-				if (!shared->done) {
+				shared->done = 1;
+				pthread_cond_broadcast(&shared->cond);
+				pthread_mutex_unlock(&shared->mutex);
+			} else {
+				__sync_fetch_and_sub(&shared->count, 1);
+				pthread_mutex_lock(&shared->mutex);
+				if (!shared->done)
 					pthread_cond_wait(&shared->cond,
 							  &shared->mutex);
-				}
 				pthread_mutex_unlock(&shared->mutex);
 			}
 		}
-		__sync_synchronize();
 	} while (!shared->done);
 }
 
