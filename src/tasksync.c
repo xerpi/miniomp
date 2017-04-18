@@ -4,7 +4,11 @@
 
 void GOMP_taskwait(void)
 {
-	printf("TBI: Entered in taskwait, there should be no pending tasks, so I proceed\n");
+	//printf("TBI: Entered in taskwait, there should be no pending tasks, so I proceed\n");
+
+
+
+	//list_pop_front
 }
 
 void GOMP_taskgroup_start(void)

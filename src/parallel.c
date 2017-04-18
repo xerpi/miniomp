@@ -1,42 +1,44 @@
 #include "libminiomp.h"
 
-pthread_key_t miniomp_specifickey;
 miniomp_parallel_global_data_t miniomp_global_data;
 
-static void parallel_implicit_barrier(miniomp_parallel_shared_data_t *shared)
+static void parallel_task_barrier(miniomp_parallel_shared_data_t *shared, miniomp_task_t *cur_task)
 {
+	miniomp_taskbatch_t *children_batch = cur_task->children_batch;
+
+	//printf("parallel_task_barrier: %p refs: %d\n", cur_task, children_batch->refs);
+
 	do {
-		miniomp_task_t *task;
-		int cur_count;
+		int cur_refs;
+		miniomp_task_t *child_task;
 
-		pthread_mutex_lock(&shared->mutex);
+		taskbatch_lock(children_batch);
+		child_task = taskbatch_dequeue(children_batch);
+		cur_refs = taskbatch_ref_get(children_batch);
+		taskbatch_unlock(children_batch);
 
-		cur_count = __sync_fetch_and_add(&shared->count, 1);
+		if (task_is_valid(child_task)) {
+			task_run(child_task);
 
-		task = taskqueue_dequeue(miniomp_taskqueue);
+			parallel_task_barrier(shared, child_task);
 
-		pthread_mutex_unlock(&shared->mutex);
-
-		if (task_is_valid(task)) {
-			task_run(task);
-			__sync_fetch_and_sub(&shared->count, 1);
-			task_destroy(task);
+			taskbatch_lock(children_batch);
+			taskbatch_ref_put(children_batch);
+			taskbatch_unlock(children_batch);
 		} else {
-			if (cur_count == 0) {
-				pthread_mutex_lock(&shared->mutex);
-				shared->done = 1;
-				pthread_cond_broadcast(&shared->cond);
-				pthread_mutex_unlock(&shared->mutex);
+			taskbatch_lock(children_batch);
+			taskbatch_ref_put(children_batch);
+			if (cur_refs == 0) {
+				taskbatch_set_done(children_batch, true);
+				taskbatch_broadcast(children_batch);
 			} else {
-				__sync_fetch_and_sub(&shared->count, 1);
-				pthread_mutex_lock(&shared->mutex);
-				if (!shared->done)
-					pthread_cond_wait(&shared->cond,
-							  &shared->mutex);
-				pthread_mutex_unlock(&shared->mutex);
+				if (!taskbatch_get_done(children_batch))
+					taskbatch_wait(children_batch);
 			}
+			taskbatch_unlock(children_batch);
+
 		}
-	} while (!shared->done);
+	} while (!taskbatch_get_done(children_batch));
 }
 
 // This is the prototype for the Pthreads starting function
@@ -44,18 +46,23 @@ static void *parallel_worker_function(void *args)
 {
 	miniomp_specific_t specific;
 	miniomp_parallel_worker_t *worker = args;
+	miniomp_task_t *cur_task = worker->current_task;
 
 	specific.id = worker->id;
+	specific.current_task = cur_task;
 	pthread_setspecific(miniomp_specifickey, &specific);
 
 	worker->fn(worker->fn_data);
 
-	__sync_fetch_and_sub(&worker->shared->count, 1);
+	taskbatch_lock(cur_task->children_batch);
+	taskbatch_ref_put(cur_task->children_batch);
+	taskbatch_unlock(cur_task->children_batch);
 
 	/*
 	 * Join the implicit barrier of the parallel clause
 	 */
-	parallel_implicit_barrier(worker->shared);
+	//parallel_implicit_barrier(worker->shared);
+	parallel_task_barrier(worker->shared, worker->current_task);
 
 	// insert all necessary code here for:
 	//   1) save thread-specific data
@@ -71,9 +78,11 @@ static void *parallel_barrier_function(void *args)
 	miniomp_parallel_barrier_t *barrier = args;
 
 	specific.id = barrier->id;
+	specific.current_task = barrier->current_task;
 	pthread_setspecific(miniomp_specifickey, &specific);
 
-	parallel_implicit_barrier(barrier->shared);
+	//parallel_implicit_barrier(barrier->shared);
+	parallel_task_barrier(barrier->shared, barrier->current_task);
 
 	// insert all necessary code here for:
 	//   1) save thread-specific data
@@ -87,11 +96,11 @@ GOMP_parallel(void (*fn)(void *), void *data, unsigned num_threads,
 	      unsigned int flags)
 {
 	unsigned i;
-	int ret;
 	pthread_t *threads;
 	miniomp_parallel_worker_t parallel_worker;
 	miniomp_parallel_barrier_t *parallel_barriers;
 	miniomp_parallel_shared_data_t *shared_data;
+	miniomp_task_t *current_task;
 
 	if (!num_threads)
 		num_threads = omp_get_num_threads();
@@ -116,11 +125,9 @@ GOMP_parallel(void (*fn)(void *), void *data, unsigned num_threads,
 		goto error_alloc_shared_data;
 	}
 
-	ret = pthread_key_create(&miniomp_specifickey, NULL);
-	if (ret != 0) {
-		printf("Error pthread_key_create(): %d\n", ret);
-		goto error_key_create;
-	}
+	current_task = miniomp_get_specific()->current_task;
+
+	taskbatch_ref_get(current_task->children_batch);
 
 	/*
 	 * Initialize shared data
@@ -143,26 +150,27 @@ GOMP_parallel(void (*fn)(void *), void *data, unsigned num_threads,
 	parallel_worker.fn = fn;
 	parallel_worker.fn_data = data;
 	parallel_worker.shared = shared_data;
-	ret = pthread_create(&threads[0], NULL,
-			     parallel_worker_function, &parallel_worker);
+	parallel_worker.current_task = current_task;
+	pthread_create(&threads[0], NULL,
+		       parallel_worker_function, &parallel_worker);
 
 	/*
 	 * Barrier thread creation
 	 */
 	for (i = 1; i < num_threads; i++) {
 		parallel_barriers[i - 1].id = i;
+		parallel_barriers[i - 1].current_task = current_task;
 		parallel_barriers[i - 1].shared = shared_data;
 
-		ret = pthread_create(&threads[i], NULL,
-				     parallel_barrier_function,
-				     &parallel_barriers[i - 1]);
+		pthread_create(&threads[i], NULL, parallel_barrier_function,
+			       &parallel_barriers[i - 1]);
 	}
 
 	/*
 	 * Wait for threads to finish
 	 */
 	for (i = 0; i < num_threads; i++) {
-		ret = pthread_join(threads[i], NULL);
+		pthread_join(threads[i], NULL);
 	}
 
 	/*
@@ -170,10 +178,9 @@ GOMP_parallel(void (*fn)(void *), void *data, unsigned num_threads,
 	 */
 	pthread_mutex_destroy(&shared_data->mutex);
 	pthread_cond_destroy(&shared_data->cond);
-	pthread_key_delete(miniomp_specifickey);
 
-error_key_create:
 	free(shared_data);
+
 error_alloc_shared_data:
 	free(parallel_barriers);
 error_parallel_barrier_alloc:

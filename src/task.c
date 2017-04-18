@@ -2,26 +2,17 @@
 
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 
-miniomp_taskqueue_t *miniomp_taskqueue;
-
-struct miniomp_task_t {
-	void (*fn)(void *);
-	void *data;
-};
-
-struct miniomp_taskqueue_t {
-	int max_elements;
-	int count;
-	int head;
-	int tail;
-	miniomp_task_t **queue;
-};
-
 miniomp_task_t *task_create(void (*fn)(void *), void *data)
 {
 	miniomp_task_t *task = malloc(sizeof(*task));
 	if (!task)
 		return NULL;
+
+	task->children_batch = taskbatch_create();
+	if (!task->children_batch) {
+		free(task);
+		return NULL;
+	}
 
 	task->fn = fn;
 	task->data = data;
@@ -31,6 +22,7 @@ miniomp_task_t *task_create(void (*fn)(void *), void *data)
 
 void task_destroy(miniomp_task_t *task)
 {
+	taskbatch_destroy(task->children_batch);
 	free(task);
 }
 
@@ -41,75 +33,95 @@ bool task_is_valid(const miniomp_task_t *task)
 
 void task_run(const miniomp_task_t *task)
 {
+	miniomp_task_t *old_task = miniomp_get_specific()->current_task;
+
+	miniomp_get_specific()->current_task = task;
 	task->fn(task->data);
+	miniomp_get_specific()->current_task = old_task;
 }
 
-miniomp_taskqueue_t *taskqueue_create(int max_elements)
+miniomp_taskbatch_t *taskbatch_create(void)
 {
-	miniomp_taskqueue_t *taskqueue;
-
-	taskqueue = malloc(sizeof(*taskqueue));
-	if (!taskqueue)
+	miniomp_taskbatch_t *taskbatch = malloc(sizeof(*taskbatch));
+	if (!taskbatch)
 		return NULL;
 
-	taskqueue->queue = malloc(max_elements * sizeof(*taskqueue->queue));
-	if (!taskqueue->queue)
-		goto error_queue_alloc;
-
-	taskqueue->max_elements = max_elements;
-	taskqueue->count = 0;
-	taskqueue->head = 0;
-	taskqueue->tail = 0;
-
-	return taskqueue;
-
-error_queue_alloc:
-	free(taskqueue);
-	return NULL;
-}
-
-void taskqueue_destroy(miniomp_taskqueue_t *taskqueue)
-{
-	free(taskqueue->queue);
-	free(taskqueue);
-}
-
-bool taskqueue_is_empty(const miniomp_taskqueue_t *taskqueue)
-{
-	return taskqueue->count == 0;
-}
-
-bool taskqueue_is_full(const miniomp_taskqueue_t *taskqueue)
-{
-	return taskqueue->count == taskqueue->max_elements;
-}
-
-bool taskqueue_enqueue(miniomp_taskqueue_t *taskqueue, miniomp_task_t *task)
-{
-	if (taskqueue_is_full(taskqueue))
-		return false;
-
-	taskqueue->queue[taskqueue->tail] = task;
-	taskqueue->count++;
-	taskqueue->tail = (taskqueue->tail + 1) % taskqueue->max_elements;
-
-	return true;
-}
-
-miniomp_task_t *taskqueue_dequeue(miniomp_taskqueue_t *taskqueue)
-{
-	miniomp_task_t *task;
-
-	if (taskqueue_is_empty(taskqueue))
+	taskbatch->task_list = list_create();
+	if (!taskbatch->task_list) {
+		free(taskbatch);
 		return NULL;
+	}
 
-	task = taskqueue->queue[taskqueue->head];
-	taskqueue->count--;
-	taskqueue->head = (taskqueue->head + 1) % taskqueue->max_elements;
+	taskbatch->refs = 0;
+	taskbatch->done = false;
+	pthread_mutex_init(&taskbatch->mutex, NULL);
+	pthread_cond_init(&taskbatch->cond, NULL);
 
-	return task;
+	return taskbatch;
 }
 
+void taskbatch_destroy(miniomp_taskbatch_t *taskbatch)
+{
+	pthread_mutex_destroy(&taskbatch->mutex);
+	pthread_cond_destroy(&taskbatch->cond);
+	list_destroy(taskbatch->task_list);
+	free(taskbatch);
+}
+
+int taskbatch_enqueue(miniomp_taskbatch_t *taskbatch, miniomp_task_t *task)
+{
+	return list_enqueue(taskbatch->task_list, task);
+}
+
+miniomp_task_t *taskbatch_dequeue(miniomp_taskbatch_t *taskbatch)
+{
+	return list_dequeue(taskbatch->task_list);
+}
+
+int taskbatch_lock(miniomp_taskbatch_t *taskbatch)
+{
+	return pthread_mutex_lock(&taskbatch->mutex);
+}
+
+int taskbatch_unlock(miniomp_taskbatch_t *taskbatch)
+{
+	return pthread_mutex_unlock(&taskbatch->mutex);
+}
+
+int taskbatch_wait(miniomp_taskbatch_t *taskbatch)
+{
+	return pthread_cond_wait(&taskbatch->cond, &taskbatch->mutex);
+}
+
+int taskbatch_signal(miniomp_taskbatch_t *taskbatch)
+{
+	return pthread_cond_signal(&taskbatch->cond);
+}
+
+int taskbatch_broadcast(miniomp_taskbatch_t *taskbatch)
+{
+	return pthread_cond_broadcast(&taskbatch->cond);
+}
+
+int taskbatch_ref_get(miniomp_taskbatch_t *taskbatch)
+{
+	return taskbatch->refs++;
+}
+
+int taskbatch_ref_put(miniomp_taskbatch_t *taskbatch)
+{
+	return taskbatch->refs--;
+}
+
+void taskbatch_set_done(miniomp_taskbatch_t *taskbatch, bool done)
+{
+	taskbatch->done = done;
+}
+
+bool taskbatch_get_done(const miniomp_taskbatch_t *taskbatch)
+{
+	return taskbatch->done;
+}
 
 #define GOMP_TASK_FLAG_UNTIED           (1 << 0)
 #define GOMP_TASK_FLAG_FINAL            (1 << 1)
@@ -136,10 +148,12 @@ GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 	  long arg_size, long arg_align, bool if_clause, unsigned flags,
 	  void **depend, int priority)
 {
-	miniomp_task_t *task;
+	miniomp_task_t *new_task;
 	void *task_data;
+	miniomp_specific_t *specific = miniomp_get_specific();
+	miniomp_task_t *cur_task = specific->current_task;
 
-	printf("GOMP_task called, size: %ld, align: %ld\n", arg_size, arg_align);
+	//printf("GOMP_task called, size: %ld, align: %ld\n", arg_size, arg_align);
 
 	if (posix_memalign(&task_data, max(arg_align, sizeof(void *)), arg_size)) {
 		printf("Error: can't allocate memory for the task data\n");
@@ -151,19 +165,22 @@ GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 	else
 		memcpy(task_data, data, arg_size);
 
-	task = task_create(fn, task_data);
-	if (!task) {
+	new_task = task_create(fn, task_data);
+	if (!new_task) {
 		free(task_data);
 		printf("Error: can't allocate memory for the task\n");
 		return;
 	}
 
-	pthread_mutex_lock(&miniomp_global_data.shared->mutex);
-	taskqueue_enqueue(miniomp_taskqueue, task);
-	pthread_mutex_unlock(&miniomp_global_data.shared->mutex);
+	//printf("Current task: %p\n", cur_task);
+	//printf("New task: %p\n", new_task);
+
+	taskbatch_lock(cur_task->children_batch);
+	taskbatch_enqueue(cur_task->children_batch, new_task);
+	taskbatch_unlock(cur_task->children_batch);
 
 	/*
 	 * Wake waiting threads at the implicit parallel barrier
 	 */
-	pthread_cond_signal(&miniomp_global_data.shared->cond);
+	taskbatch_signal(cur_task->children_batch);
 }

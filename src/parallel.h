@@ -1,4 +1,5 @@
 #include <pthread.h>
+#include "task.h"
 
 typedef struct {
 	int count;
@@ -11,16 +12,19 @@ typedef struct {
 	int id;
 	void (*fn)(void *);
 	void *fn_data;
+	miniomp_task_t *current_task;
 	miniomp_parallel_shared_data_t *shared;
 } miniomp_parallel_worker_t;
 
 typedef struct {
 	int id;
+	miniomp_task_t *current_task;
 	miniomp_parallel_shared_data_t *shared;
 } miniomp_parallel_barrier_t;
 
 typedef struct {
 	int id;
+	miniomp_task_t *current_task;
 } miniomp_specific_t;
 
 typedef struct {

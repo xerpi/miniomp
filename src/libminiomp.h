@@ -21,3 +21,5 @@
 #include "loop.h"
 #include "single.h"
 #include "task.h"
+
+miniomp_specific_t *miniomp_get_specific(void);
