@@ -6,39 +6,7 @@ static void parallel_task_barrier(miniomp_parallel_shared_data_t *shared, miniom
 {
 	miniomp_taskbatch_t *children_batch = cur_task->children_batch;
 
-	//printf("parallel_task_barrier: %p refs: %d\n", cur_task, children_batch->refs);
-
-	do {
-		int cur_refs;
-		miniomp_task_t *child_task;
-
-		taskbatch_lock(children_batch);
-		child_task = taskbatch_dequeue(children_batch);
-		cur_refs = taskbatch_ref_get(children_batch);
-		taskbatch_unlock(children_batch);
-
-		if (task_is_valid(child_task)) {
-			task_run(child_task);
-
-			parallel_task_barrier(shared, child_task);
-
-			taskbatch_lock(children_batch);
-			taskbatch_ref_put(children_batch);
-			taskbatch_unlock(children_batch);
-		} else {
-			taskbatch_lock(children_batch);
-			taskbatch_ref_put(children_batch);
-			if (cur_refs == 0) {
-				taskbatch_set_done(children_batch, true);
-				taskbatch_broadcast(children_batch);
-			} else {
-				if (!taskbatch_get_done(children_batch))
-					taskbatch_wait(children_batch);
-			}
-			taskbatch_unlock(children_batch);
-
-		}
-	} while (!taskbatch_get_done(children_batch));
+	taskbatch_dispatch(children_batch, true);
 }
 
 // This is the prototype for the Pthreads starting function
