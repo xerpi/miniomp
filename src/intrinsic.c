@@ -12,13 +12,7 @@ int omp_get_num_threads(void)
 
 int omp_get_thread_num(void)
 {
-	miniomp_specific_t *specific;
-
-	specific = pthread_getspecific(miniomp_specifickey);
-	if (!specific) {
-		printf("Error pthread_getspecific()\n");
-		return 0;
-	}
+	miniomp_specific_t *specific = miniomp_get_specific();
 
 	return specific->id;
 }
