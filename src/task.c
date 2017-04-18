@@ -15,20 +15,33 @@ miniomp_task_t *task_create(void (*fn)(void *), void *data)
 		return NULL;
 	}
 
+	task->taskgroup_batch = taskbatch_create();
+	if (!task->taskgroup_batch) {
+		taskbatch_destroy(task->children_batch);
+		free(task);
+		return NULL;
+	}
+
+	miniomp_list_init(&task->children_link);
+	miniomp_list_init(&task->taskgroup_link);
+
 	task->fn = fn;
 	task->data = data;
-	task->taskgroup = NULL;
+	task->refs = 0;
+	task->in_taskgroup = false;
 
 	pthread_mutex_init(&task->mutex, NULL);
+	pthread_cond_init(&task->cond, NULL);
 
 	return task;
 }
 
 void task_destroy(miniomp_task_t *task)
 {
-	assert(task->taskgroup == NULL);
 	taskbatch_destroy(task->children_batch);
+	taskbatch_destroy(task->taskgroup_batch);
 	pthread_mutex_destroy(&task->mutex);
+	pthread_cond_destroy(&task->cond);
 	free(task);
 }
 
@@ -47,7 +60,7 @@ int task_unlock(miniomp_task_t *task)
 	return pthread_mutex_unlock(&task->mutex);
 }
 
-void task_run(const miniomp_task_t *task)
+void task_run(miniomp_task_t *task)
 {
 	miniomp_task_t *old_task = miniomp_get_specific()->current_task;
 
@@ -56,62 +69,68 @@ void task_run(const miniomp_task_t *task)
 	miniomp_get_specific()->current_task = old_task;
 }
 
-miniomp_taskgroup_t *taskgroup_create(void)
+int task_ref_get(miniomp_task_t *task)
 {
-	miniomp_taskgroup_t *taskgroup = malloc(sizeof(*taskgroup));
-	if (!taskgroup)
-		return NULL;
+	return task->refs++;
+}
 
-	taskgroup->batch = taskbatch_create();
-	if (!taskgroup->batch) {
-		free(taskgroup);
-		return NULL;
+int task_ref_put(miniomp_task_t *task)
+{
+	return task->refs--;
+}
+
+void task_dispatch(miniomp_task_t *task, bool recursively)
+{
+	while (1) {
+		uint32_t cur_refs;
+		miniomp_task_t *child = NULL;
+
+		task_lock(task);
+
+		/*
+		 * taskgroup tasks have priority over regular children
+		 */
+		if (!taskbatch_is_empty(task->taskgroup_batch)) {
+			child = taskbatch_front(task->taskgroup_batch,
+						child, taskgroup_link);
+		} else if (!taskbatch_is_empty(task->children_batch)) {
+			child = taskbatch_front(task->children_batch,
+						child, children_link);
+		}
+
+		cur_refs = task_ref_get(task);
+
+		if (task_is_valid(child)) {
+			miniomp_list_remove(&child->children_link);
+			if (!miniomp_list_is_empty(&child->taskgroup_link))
+				miniomp_list_remove(&child->taskgroup_link);
+
+			task_unlock(task);
+
+			task_run(child);
+
+			if (recursively)
+				task_dispatch(child, true);
+
+			task_destroy(child);
+
+			task_lock(task);
+			task_ref_put(task);
+			task_unlock(task);
+		} else {
+			task_ref_put(task);
+			if (cur_refs == 0) {
+				task_unlock(task);
+				pthread_cond_broadcast(&task->cond);
+				break;
+			} else {
+				pthread_cond_wait(&task->cond, &task->mutex);
+				task_unlock(task);
+			}
+		}
 	}
 
-	return taskgroup;
-}
-
-void taskgroup_destroy(miniomp_taskgroup_t *taskgroup)
-{
-	taskbatch_destroy(taskgroup->batch);
-	free(taskgroup);
-}
-
-void taskgroup_dispatch(miniomp_taskgroup_t *taskgroup)
-{
-	taskbatch_dispatch(taskgroup->batch, true);
-}
-
-miniomp_taskbatch_t *taskbatch_create(void)
-{
-	miniomp_taskbatch_t *taskbatch = malloc(sizeof(*taskbatch));
-	if (!taskbatch)
-		return NULL;
-
-	taskbatch->task_list = list_create();
-	if (!taskbatch->task_list) {
-		free(taskbatch);
-		return NULL;
-	}
-
-	taskbatch->refs = 0;
-	taskbatch->done = false;
-	pthread_mutex_init(&taskbatch->mutex, NULL);
-	pthread_cond_init(&taskbatch->cond, NULL);
-
-	return taskbatch;
-}
-
-void taskbatch_destroy(miniomp_taskbatch_t *taskbatch)
-{
-	pthread_mutex_destroy(&taskbatch->mutex);
-	pthread_cond_destroy(&taskbatch->cond);
-	list_destroy(taskbatch->task_list);
-	free(taskbatch);
-}
-
-void taskbatch_dispatch(miniomp_taskbatch_t *taskbatch, bool recursively)
-{
+#if 0
 	do {
 		uint32_t cur_refs;
 		miniomp_task_t *task;
@@ -146,51 +165,39 @@ void taskbatch_dispatch(miniomp_taskbatch_t *taskbatch, bool recursively)
 
 		}
 	} while (!taskbatch_get_done(taskbatch));
+#endif
 }
 
-int taskbatch_enqueue(miniomp_taskbatch_t *taskbatch, miniomp_task_t *task)
+miniomp_taskbatch_t *taskbatch_create(void)
 {
-	return list_enqueue(taskbatch->task_list, task);
+	miniomp_taskbatch_t *taskbatch = malloc(sizeof(*taskbatch));
+	if (!taskbatch)
+		return NULL;
+
+	miniomp_list_init(&taskbatch->task_list);
+	taskbatch->done = false;
+
+	return taskbatch;
 }
 
-miniomp_task_t *taskbatch_dequeue(miniomp_taskbatch_t *taskbatch)
+void taskbatch_destroy(miniomp_taskbatch_t *taskbatch)
 {
-	return list_dequeue(taskbatch->task_list);
+	free(taskbatch);
 }
 
-int taskbatch_lock(miniomp_taskbatch_t *taskbatch)
+void taskbatch_insert(miniomp_taskbatch_t *taskbatch, miniomp_list_t *task_link)
 {
-	return pthread_mutex_lock(&taskbatch->mutex);
+	miniomp_list_insert(&taskbatch->task_list, task_link);
 }
 
-int taskbatch_unlock(miniomp_taskbatch_t *taskbatch)
+void taskbatch_remove(miniomp_list_t *task_link)
 {
-	return pthread_mutex_unlock(&taskbatch->mutex);
+	miniomp_list_remove(task_link);
 }
 
-int taskbatch_wait(miniomp_taskbatch_t *taskbatch)
+bool taskbatch_is_empty(const miniomp_taskbatch_t *taskbatch)
 {
-	return pthread_cond_wait(&taskbatch->cond, &taskbatch->mutex);
-}
-
-int taskbatch_signal(miniomp_taskbatch_t *taskbatch)
-{
-	return pthread_cond_signal(&taskbatch->cond);
-}
-
-int taskbatch_broadcast(miniomp_taskbatch_t *taskbatch)
-{
-	return pthread_cond_broadcast(&taskbatch->cond);
-}
-
-int taskbatch_ref_get(miniomp_taskbatch_t *taskbatch)
-{
-	return taskbatch->refs++;
-}
-
-int taskbatch_ref_put(miniomp_taskbatch_t *taskbatch)
-{
-	return taskbatch->refs--;
+	return miniomp_list_is_empty(&taskbatch->task_list);
 }
 
 void taskbatch_set_done(miniomp_taskbatch_t *taskbatch, bool done)
@@ -257,20 +264,17 @@ GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 
 	task_lock(cur_task);
 
-	taskbatch_lock(cur_task->children_batch);
-	taskbatch_enqueue(cur_task->children_batch, new_task);
-	taskbatch_unlock(cur_task->children_batch);
+	taskbatch_insert(cur_task->children_batch,
+			 &new_task->children_link);
 
-	if (cur_task->taskgroup) {
-		taskbatch_lock(cur_task->taskgroup->batch);
-		taskbatch_enqueue(cur_task->taskgroup->batch, new_task);
-		taskbatch_unlock(cur_task->taskgroup->batch);
-	}
+	if (cur_task->in_taskgroup)
+		taskbatch_insert(cur_task->taskgroup_batch,
+			         &new_task->taskgroup_link);
 
 	task_unlock(cur_task);
 
 	/*
-	 * Wake waiting threads at the implicit parallel barrier
+	 * Wake up threads waiting for the signal.
 	 */
-	taskbatch_signal(cur_task->children_batch);
+	pthread_cond_signal(&cur_task->cond);
 }

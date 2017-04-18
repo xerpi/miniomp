@@ -11,8 +11,7 @@
 int main(int argc, char *argv[])
 {
 	#pragma omp parallel
-	{
-		for (int i = 0; i < 5; i++) {
+	{for (int i = 0; i < 5; i++) {
 			#pragma omp task
 			{
 				printf("Outer task: %d\n", i);

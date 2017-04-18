@@ -2,11 +2,9 @@
 
 miniomp_parallel_global_data_t miniomp_global_data;
 
-static void parallel_task_barrier(miniomp_parallel_shared_data_t *shared, miniomp_task_t *cur_task)
+static void parallel_task_barrier(miniomp_parallel_shared_data_t *shared, miniomp_task_t *task)
 {
-	miniomp_taskbatch_t *children_batch = cur_task->children_batch;
-
-	taskbatch_dispatch(children_batch, true);
+	task_dispatch(task, true);
 }
 
 // This is the prototype for the Pthreads starting function
@@ -22,9 +20,9 @@ static void *parallel_worker_function(void *args)
 
 	worker->fn(worker->fn_data);
 
-	taskbatch_lock(cur_task->children_batch);
-	taskbatch_ref_put(cur_task->children_batch);
-	taskbatch_unlock(cur_task->children_batch);
+	/*task_lock(cur_task);
+	task_ref_put(cur_task);
+	task_unlock(cur_task);*/
 
 	/*
 	 * Join the implicit barrier of the parallel clause
@@ -95,7 +93,7 @@ GOMP_parallel(void (*fn)(void *), void *data, unsigned num_threads,
 
 	current_task = miniomp_get_specific()->current_task;
 
-	taskbatch_ref_get(current_task->children_batch);
+	//task_ref_get(current_task);
 
 	/*
 	 * Initialize shared data

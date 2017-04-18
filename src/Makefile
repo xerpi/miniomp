@@ -2,7 +2,7 @@ TARGET		= libminiomp.so
 OBJS		= libminiomp.o env.o intrinsic.o parallel.o synchronization.o single.o loop.o task.o tasksync.o taskloop.o list.o
 DEPS		= $(OBJS:.o=.d)
 CC		= gcc
-CFLAGS		= -fPIC -Wall -O -std=c99 -march=native -I. -D_GNU_SOURCE
+CFLAGS		= -fPIC -Wall -O -std=c99 -march=native -I. -D_GNU_SOURCE -g3
 CFLAGS_SO	= --shared
 LIB_DIR		= $(MINIOMP)/lib
 VPATH		= $(LIB_DIR)
