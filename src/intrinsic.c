@@ -13,6 +13,8 @@ int omp_get_num_threads(void)
 int omp_get_thread_num(void)
 {
 	miniomp_specific_t *specific = miniomp_get_specific();
+	if (!specific)
+		return 0;
 
 	return specific->id;
 }

@@ -1,59 +1,44 @@
 #include "libminiomp.h"
 
-miniomp_parallel_global_data_t miniomp_global_data;
-
-static void parallel_task_barrier(miniomp_parallel_shared_data_t *shared, miniomp_task_t *task)
+static void parallel_implicit_barrier(miniomp_tasklist_t *tasklist,
+				      miniomp_task_t *task)
 {
-	task_dispatch(task, true);
+	tasklist_dispatch_for_task(tasklist, task,
+				   TASKLIST_DISPATCH_FOR_DESCENDANTS);
 }
 
-// This is the prototype for the Pthreads starting function
 static void *parallel_worker_function(void *args)
 {
 	miniomp_specific_t specific;
-	miniomp_parallel_worker_t *worker = args;
-	miniomp_task_t *cur_task = worker->current_task;
+	miniomp_parallel_worker_args_t *worker = args;
+	miniomp_task_t *task = worker->current_task;
+	miniomp_tasklist_t *tasklist = task->tasklist;
 
 	specific.id = worker->id;
-	specific.current_task = cur_task;
-	pthread_setspecific(miniomp_specifickey, &specific);
-
-	worker->fn(worker->fn_data);
-
-	/*task_lock(cur_task);
-	task_ref_put(cur_task);
-	task_unlock(cur_task);*/
+	specific.current_task = task;
+	miniomp_set_specific(&specific);
 
 	/*
-	 * Join the implicit barrier of the parallel clause
+	 * Implicit barrier of the parallel clause
 	 */
-	//parallel_implicit_barrier(worker->shared);
-	parallel_task_barrier(worker->shared, worker->current_task);
+	parallel_implicit_barrier(tasklist, task);
 
-	// insert all necessary code here for:
-	//   1) save thread-specific data
-	//   2) invoke the per-threads instance of function encapsulating the parallel region
-	//   3) exit the function
 	return NULL;
 }
 
-// This is the prototype for the parallel's implicit barrier
 static void *parallel_barrier_function(void *args)
 {
 	miniomp_specific_t specific;
-	miniomp_parallel_barrier_t *barrier = args;
+	miniomp_parallel_barrier_args_t *barrier = args;
+	miniomp_task_t *task = barrier->current_task;
+	miniomp_tasklist_t *tasklist = task->tasklist;
 
 	specific.id = barrier->id;
-	specific.current_task = barrier->current_task;
-	pthread_setspecific(miniomp_specifickey, &specific);
+	specific.current_task = task;
+	miniomp_set_specific(&specific);
 
-	//parallel_implicit_barrier(barrier->shared);
-	parallel_task_barrier(barrier->shared, barrier->current_task);
+	parallel_implicit_barrier(tasklist, task);
 
-	// insert all necessary code here for:
-	//   1) save thread-specific data
-	//   2) invoke the per-threads instance of function encapsulating the parallel region
-	//   3) exit the function
 	return NULL;
 }
 
@@ -63,73 +48,61 @@ GOMP_parallel(void (*fn)(void *), void *data, unsigned num_threads,
 {
 	unsigned i;
 	pthread_t *threads;
-	miniomp_parallel_worker_t parallel_worker;
-	miniomp_parallel_barrier_t *parallel_barriers;
-	miniomp_parallel_shared_data_t *shared_data;
-	miniomp_task_t *current_task;
+	miniomp_parallel_worker_args_t parallel_worker;
+	miniomp_parallel_barrier_args_t *parallel_barriers;
+	miniomp_task_t *implicit_task;
+	miniomp_tasklist_t *tasklist;
 
 	if (!num_threads)
 		num_threads = omp_get_num_threads();
 
-	printf("Starting a parallel region using %d threads\n", num_threads);
+	dbgprintf("Starting a parallel region using %d threads\n", num_threads);
 
 	threads = calloc(num_threads, sizeof(*threads));
 	if (!threads) {
-		printf("Error allocating thread IDs\n");
+		errprintf("Error allocating thread IDs\n");
 		return;
 	}
 
 	parallel_barriers = calloc(num_threads - 1, sizeof(*parallel_barriers));
 	if (!parallel_barriers) {
-		printf("Error allocating parallel_barriers\n");
+		errprintf("Error allocating parallel_barriers\n");
 		goto error_parallel_barrier_alloc;
 	}
 
-	shared_data = malloc(sizeof(*shared_data));
-	if (!shared_data) {
-		printf("Error allocating shared_data\n");
-		goto error_alloc_shared_data;
+	tasklist = tasklist_create();
+	if (!tasklist) {
+		errprintf("Error creating the parallel tasklist\n");
+		goto error_tasklist_create;
 	}
 
-	current_task = miniomp_get_specific()->current_task;
-
-	//task_ref_get(current_task);
-
 	/*
-	 * Initialize shared data
+	 * OMP parallel construct creates an implicit task.
 	 */
-	pthread_mutex_init(&shared_data->mutex, NULL);
-	pthread_cond_init(&shared_data->cond, NULL);
-	shared_data->done = false;
-	shared_data->count = 1;
-	__sync_synchronize();
+	implicit_task = task_create(NULL, tasklist, fn, data, false);
+	if (!implicit_task) {
+		errprintf("Error creating the parallel implicit task\n");
+		goto error_implicit_task_create;
+	}
 
-	/*
-	 * Set parallel global libminiomp data
-	 */
-	miniomp_global_data.shared = shared_data;
+	tasklist_insert(tasklist, implicit_task);
 
 	/*
 	 * Parallel-single thread creation
 	 */
 	parallel_worker.id = 0;
-	parallel_worker.fn = fn;
-	parallel_worker.fn_data = data;
-	parallel_worker.shared = shared_data;
-	parallel_worker.current_task = current_task;
+	parallel_worker.current_task = implicit_task;
 	pthread_create(&threads[0], NULL,
 		       parallel_worker_function, &parallel_worker);
 
 	/*
 	 * Barrier thread creation
 	 */
-	for (i = 1; i < num_threads; i++) {
-		parallel_barriers[i - 1].id = i;
-		parallel_barriers[i - 1].current_task = current_task;
-		parallel_barriers[i - 1].shared = shared_data;
-
-		pthread_create(&threads[i], NULL, parallel_barrier_function,
-			       &parallel_barriers[i - 1]);
+	for (i = 0; i < num_threads - 1; i++) {
+		parallel_barriers[i].id = i + 1;
+		parallel_barriers[i].current_task = implicit_task;
+		pthread_create(&threads[i + 1], NULL, parallel_barrier_function,
+			       &parallel_barriers[i]);
 	}
 
 	/*
@@ -139,15 +112,10 @@ GOMP_parallel(void (*fn)(void *), void *data, unsigned num_threads,
 		pthread_join(threads[i], NULL);
 	}
 
-	/*
-	 * Cleanup
-	 */
-	pthread_mutex_destroy(&shared_data->mutex);
-	pthread_cond_destroy(&shared_data->cond);
-
-	free(shared_data);
-
-error_alloc_shared_data:
+	/* fallthrough */
+error_implicit_task_create:
+	tasklist_destroy(tasklist);
+error_tasklist_create:
 	free(parallel_barriers);
 error_parallel_barrier_alloc:
 	free(threads);

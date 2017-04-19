@@ -1,47 +1,58 @@
 #include <assert.h>
 #include "libminiomp.h"
 
-#define max(a, b) (((a) > (b)) ? (a) : (b))
+static void task_new_descendant(miniomp_task_t *task, bool is_child,
+				bool created_in_taskgroup)
+{
+	if (!task)
+		return;
 
-miniomp_task_t *task_create(void (*fn)(void *), void *data)
+	task_lock(task);
+
+	task->descendant_count++;
+
+	if (is_child) {
+		task->has_created_children = true;
+		task->children_count++;
+	}
+
+	if (created_in_taskgroup)
+		task->taskgroup_count++;
+
+	task_unlock(task);
+
+	task_new_descendant(task->parent, false, task->created_in_taskgroup);
+}
+
+miniomp_task_t *task_create(miniomp_task_t *parent, miniomp_tasklist_t *tasklist,
+			    void (*fn)(void *), void *data, bool created_in_taskgroup)
 {
 	miniomp_task_t *task = malloc(sizeof(*task));
 	if (!task)
 		return NULL;
 
-	task->children_batch = taskbatch_create();
-	if (!task->children_batch) {
-		free(task);
-		return NULL;
-	}
-
-	task->taskgroup_batch = taskbatch_create();
-	if (!task->taskgroup_batch) {
-		taskbatch_destroy(task->children_batch);
-		free(task);
-		return NULL;
-	}
-
-	miniomp_list_init(&task->children_link);
-	miniomp_list_init(&task->taskgroup_link);
-
+	task->parent = parent;
+	task->tasklist = tasklist;
 	task->fn = fn;
 	task->data = data;
-	task->refs = 0;
+	task->descendant_count = 0;
+	task->children_count = 0;
+	task->taskgroup_count = 0;
 	task->in_taskgroup = false;
+	task->created_in_taskgroup = created_in_taskgroup;
+	task->has_created_children = false;
 
 	pthread_mutex_init(&task->mutex, NULL);
-	pthread_cond_init(&task->cond, NULL);
+
+	task_new_descendant(parent, true, created_in_taskgroup);
 
 	return task;
 }
 
 void task_destroy(miniomp_task_t *task)
 {
-	taskbatch_destroy(task->children_batch);
-	taskbatch_destroy(task->taskgroup_batch);
 	pthread_mutex_destroy(&task->mutex);
-	pthread_cond_destroy(&task->cond);
+	free(task->data);
 	free(task);
 }
 
@@ -60,154 +71,176 @@ int task_unlock(miniomp_task_t *task)
 	return pthread_mutex_unlock(&task->mutex);
 }
 
-void task_run(miniomp_task_t *task)
+static void task_descendant_done_run(miniomp_task_t *task, bool is_child,
+				     bool child_created_in_taskgroup)
 {
-	miniomp_task_t *old_task = miniomp_get_specific()->current_task;
+	bool created_in_taskgroup;
+	miniomp_tasklist_t *tasklist;
+	bool destroy = false;
 
-	miniomp_get_specific()->current_task = task;
-	task->fn(task->data);
-	miniomp_get_specific()->current_task = old_task;
-}
+	if (!task)
+		return;
 
-int task_ref_get(miniomp_task_t *task)
-{
-	return task->refs++;
-}
+	task_lock(task);
 
-int task_ref_put(miniomp_task_t *task)
-{
-	return task->refs--;
-}
+	created_in_taskgroup = task->created_in_taskgroup;
+	tasklist = task->tasklist;
 
-void task_dispatch(miniomp_task_t *task, bool recursively)
-{
-	while (1) {
-		uint32_t cur_refs;
-		miniomp_task_t *child = NULL;
-
-		task_lock(task);
-
-		/*
-		 * taskgroup tasks have priority over regular children
-		 */
-		if (!taskbatch_is_empty(task->taskgroup_batch)) {
-			child = taskbatch_front(task->taskgroup_batch,
-						child, taskgroup_link);
-		} else if (!taskbatch_is_empty(task->children_batch)) {
-			child = taskbatch_front(task->children_batch,
-						child, children_link);
-		}
-
-		cur_refs = task_ref_get(task);
-
-		if (task_is_valid(child)) {
-			miniomp_list_remove(&child->children_link);
-			if (!miniomp_list_is_empty(&child->taskgroup_link))
-				miniomp_list_remove(&child->taskgroup_link);
-
-			task_unlock(task);
-
-			task_run(child);
-
-			if (recursively)
-				task_dispatch(child, true);
-
-			task_destroy(child);
-
-			task_lock(task);
-			task_ref_put(task);
-			task_unlock(task);
-		} else {
-			task_ref_put(task);
-			if (cur_refs == 0) {
-				task_unlock(task);
-				pthread_cond_broadcast(&task->cond);
-				break;
-			} else {
-				pthread_cond_wait(&task->cond, &task->mutex);
-				task_unlock(task);
-			}
-		}
+	if (task->descendant_count-- == 1) {
+		destroy = true;
+		pthread_cond_signal(&tasklist->cond);
 	}
 
-#if 0
-	do {
-		uint32_t cur_refs;
-		miniomp_task_t *task;
+	if (is_child) {
+		if (task->children_count-- == 1)
+			pthread_cond_signal(&task->tasklist->cond);
+	}
 
-		taskbatch_lock(taskbatch);
-		task = taskbatch_dequeue(taskbatch);
-		cur_refs = taskbatch_ref_get(taskbatch);
-		taskbatch_unlock(taskbatch);
+	if (child_created_in_taskgroup) {
+		if (task->taskgroup_count-- == 1)
+			pthread_cond_signal(&task->tasklist->cond);
+	}
 
-		if (task_is_valid(task)) {
-			task_run(task);
+	task_unlock(task);
 
-			if (recursively)
-				taskbatch_dispatch(task->children_batch, true);
+	task_descendant_done_run(task->parent, false, created_in_taskgroup);
 
-			task_destroy(task);
-
-			taskbatch_lock(taskbatch);
-			taskbatch_ref_put(taskbatch);
-			taskbatch_unlock(taskbatch);
-		} else {
-			taskbatch_lock(taskbatch);
-			taskbatch_ref_put(taskbatch);
-			if (cur_refs == 0) {
-				taskbatch_set_done(taskbatch, true);
-				taskbatch_broadcast(taskbatch);
-			} else {
-				if (!taskbatch_get_done(taskbatch))
-					taskbatch_wait(taskbatch);
-			}
-			taskbatch_unlock(taskbatch);
-
-		}
-	} while (!taskbatch_get_done(taskbatch));
-#endif
+	if (destroy)
+		task_destroy(task);
 }
 
-miniomp_taskbatch_t *taskbatch_create(void)
+void task_run(miniomp_task_t *task)
 {
-	miniomp_taskbatch_t *taskbatch = malloc(sizeof(*taskbatch));
-	if (!taskbatch)
+	miniomp_specific_t *specific = miniomp_get_specific();
+	miniomp_task_t *old_task = specific->current_task;
+
+	specific->current_task = task;
+	task->fn(task->data);
+	specific->current_task = old_task;
+
+	task_descendant_done_run(task->parent, true, task->created_in_taskgroup);
+}
+
+miniomp_tasklist_t *tasklist_create(void)
+{
+	miniomp_tasklist_t *tasklist = malloc(sizeof(*tasklist));
+	if (!tasklist)
 		return NULL;
 
-	miniomp_list_init(&taskbatch->task_list);
-	taskbatch->done = false;
+	miniomp_list_init(&tasklist->list);
+	pthread_mutex_init(&tasklist->mutex, NULL);
+	pthread_cond_init(&tasklist->cond, NULL);
 
-	return taskbatch;
+	return tasklist;
 }
 
-void taskbatch_destroy(miniomp_taskbatch_t *taskbatch)
+void tasklist_destroy(miniomp_tasklist_t *tasklist)
 {
-	free(taskbatch);
+	pthread_mutex_destroy(&tasklist->mutex);
+	pthread_cond_destroy(&tasklist->cond);
+	free(tasklist);
 }
 
-void taskbatch_insert(miniomp_taskbatch_t *taskbatch, miniomp_list_t *task_link)
+void tasklist_insert(miniomp_tasklist_t *tasklist, miniomp_task_t *task)
 {
-	miniomp_list_insert(&taskbatch->task_list, task_link);
+	pthread_mutex_lock(&tasklist->mutex);
+	miniomp_list_insert(&tasklist->list, &task->link);
+	pthread_mutex_unlock(&tasklist->mutex);
 }
 
-void taskbatch_remove(miniomp_list_t *task_link)
+void tasklist_remove(miniomp_tasklist_t *tasklist, miniomp_task_t *task)
 {
-	miniomp_list_remove(task_link);
+	pthread_mutex_lock(&tasklist->mutex);
+	miniomp_list_remove(&task->link);
+	pthread_mutex_unlock(&tasklist->mutex);
 }
 
-bool taskbatch_is_empty(const miniomp_taskbatch_t *taskbatch)
+bool tasklist_is_empty(const miniomp_tasklist_t *tasklist)
 {
-	return miniomp_list_is_empty(&taskbatch->task_list);
+	return miniomp_list_is_empty(&tasklist->list);
 }
 
-void taskbatch_set_done(miniomp_taskbatch_t *taskbatch, bool done)
+miniomp_task_t *tasklist_pop_front(miniomp_tasklist_t *tasklist)
 {
-	taskbatch->done = done;
+	miniomp_task_t *task;
+
+	pthread_mutex_lock(&tasklist->mutex);
+
+	if (tasklist_is_empty(tasklist)) {
+		pthread_mutex_unlock(&tasklist->mutex);
+		return NULL;
+	}
+
+	task = miniomp_list_front(&tasklist->list, task, link);
+	miniomp_list_remove(&task->link);
+
+	pthread_mutex_unlock(&tasklist->mutex);
+
+	return task;
 }
 
-bool taskbatch_get_done(const miniomp_taskbatch_t *taskbatch)
+bool task_meets_dispatch_flags(miniomp_task_t *task,
+			       miniomp_tasklist_dispatch_flags_t flags)
 {
-	return taskbatch->done;
+	bool ret = false;
+
+	task_lock(task);
+
+	if (flags == TASKLIST_DISPATCH_FOR_DESCENDANTS)
+		ret = task->descendant_count == 0;
+	else if (flags == TASKLIST_DISPATCH_FOR_CHILDREN)
+		ret = task->children_count == 0;
+	else if (flags == TASKLIST_DISPATCH_FOR_TASKGROUP)
+		ret = task->taskgroup_count == 0;
+
+	task_unlock(task);
+
+	return ret;
+}
+
+void tasklist_dispatch_for_task(miniomp_tasklist_t *tasklist, miniomp_task_t *task,
+				miniomp_tasklist_dispatch_flags_t flags)
+{
+	while (1) {
+		miniomp_task_t *dispatch_task;
+		bool valid;
+
+		dispatch_task = tasklist_pop_front(tasklist);
+
+		valid = task_is_valid(dispatch_task);
+		if (valid) {
+			bool destroy;
+
+			task_run(dispatch_task);
+
+			task_lock(dispatch_task);
+			destroy = !dispatch_task->has_created_children;
+			task_unlock(dispatch_task);
+
+			if (destroy)
+				task_destroy(dispatch_task);
+		}
+
+		pthread_mutex_lock(&tasklist->mutex);
+
+		if (task_meets_dispatch_flags(task, flags)) {
+			pthread_mutex_unlock(&tasklist->mutex);
+			pthread_cond_broadcast(&tasklist->cond);
+			break;
+		}
+
+		if (!valid) {
+			pthread_cond_wait(&tasklist->cond, &tasklist->mutex);
+
+			if (task_meets_dispatch_flags(task, flags)) {
+				pthread_mutex_unlock(&tasklist->mutex);
+				pthread_cond_broadcast(&tasklist->cond);
+				break;
+			}
+		}
+
+		pthread_mutex_unlock(&tasklist->mutex);
+	}
 }
 
 #define GOMP_TASK_FLAG_UNTIED           (1 << 0)
@@ -239,11 +272,12 @@ GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 	void *task_data;
 	miniomp_specific_t *specific = miniomp_get_specific();
 	miniomp_task_t *cur_task = specific->current_task;
+	miniomp_tasklist_t *cur_tasklist = cur_task->tasklist;
 
-	//printf("GOMP_task called, size: %ld, align: %ld\n", arg_size, arg_align);
+	dbgprintf("GOMP_task called, size: %ld, align: %ld\n", arg_size, arg_align);
 
 	if (posix_memalign(&task_data, max(arg_align, sizeof(void *)), arg_size)) {
-		printf("Error: can't allocate memory for the task data\n");
+		errprintf("Error: can't allocate memory for the task data\n");
 		return;
 	}
 
@@ -252,29 +286,18 @@ GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 	else
 		memcpy(task_data, data, arg_size);
 
-	new_task = task_create(fn, task_data);
+	new_task = task_create(cur_task, cur_tasklist, fn, task_data,
+			       cur_task->in_taskgroup);
 	if (!new_task) {
 		free(task_data);
-		printf("Error: can't allocate memory for the task\n");
+		errprintf("Error: can't allocate memory for the task\n");
 		return;
 	}
 
-	//printf("Current task: %p\n", cur_task);
-	//printf("New task: %p\n", new_task);
-
-	task_lock(cur_task);
-
-	taskbatch_insert(cur_task->children_batch,
-			 &new_task->children_link);
-
-	if (cur_task->in_taskgroup)
-		taskbatch_insert(cur_task->taskgroup_batch,
-			         &new_task->taskgroup_link);
-
-	task_unlock(cur_task);
+	tasklist_insert(cur_tasklist, new_task);
 
 	/*
 	 * Wake up threads waiting for the signal.
 	 */
-	pthread_cond_signal(&cur_task->cond);
+	pthread_cond_signal(&cur_tasklist->cond);
 }

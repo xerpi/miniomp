@@ -20,13 +20,6 @@ void miniomp_list_remove(miniomp_list_t *elem);
 #define miniomp_list_front(list, sample, member) \
 		container_of((list)->next, sample, member);
 
-#define miniomp_list_pop_front(list, sample, member) \
-	({ \
-		miniomp_list_t *next = (miniomp_list)->next; \
-		miniomp_list_remove(next); \
-		container_of(next, sample, member); \
-	})
-
 #define miniomp_list_for_each(it, list, link) \
 	for (it = container_of(it->link, it, link); \
 	     &it->link != miniomp_list; \

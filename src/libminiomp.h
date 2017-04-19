@@ -6,14 +6,6 @@
 #include <stdint.h>
 #include <pthread.h>
 
-// Maximum number of threads to be supported by our implementation
-// To be used whenever you need to dimension thread-relared structures
-#define MAX_THREADS 32
-
-// To implement memory barrier (flush)
-//void __atomic_thread_fence(int);
-#define mb() __atomic_thread_fence(3)
-
 #include "intrinsic.h"
 #include "env.h"
 #include "parallel.h"
@@ -22,4 +14,20 @@
 #include "single.h"
 #include "task.h"
 
+#define max(a, b) (((a) > (b)) ? (a) : (b))
+
+#define errprintf(...) fprintf(stderr, __VA_ARGS__)
+
+#ifdef DEBUG
+#define dbgprintf(...) errprintf(__VA_ARGS__)
+#else
+#define dbgprintf(...) (void)0
+#endif
+
+typedef struct miniomp_specific_t {
+	int id;
+	miniomp_task_t *current_task;
+} miniomp_specific_t;
+
 miniomp_specific_t *miniomp_get_specific(void);
+int miniomp_set_specific(const void *value);

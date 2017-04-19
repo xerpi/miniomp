@@ -7,7 +7,12 @@ CFLAGS_SO	= --shared
 LIB_DIR		= $(MINIOMP)/lib
 VPATH		= $(LIB_DIR)
 
-all: $(LIB_DIR) $(TARGET)
+all: main
+
+main: $(LIB_DIR) $(TARGET)
+
+debug: CFLAGS += -DDEBUG
+debug: main
 
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS_SO) $(CFLAGS) $^ -o $(LIB_DIR)/$@ -lpthread
