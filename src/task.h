@@ -48,7 +48,6 @@ void task_run(miniomp_task_t *task);
 miniomp_tasklist_t *tasklist_create(void);
 void tasklist_destroy(miniomp_tasklist_t *tasklist);
 void tasklist_insert(miniomp_tasklist_t *tasklist, miniomp_task_t *task);
-void tasklist_remove(miniomp_tasklist_t *tasklist, miniomp_task_t *task);
 bool tasklist_is_empty(const miniomp_tasklist_t *tasklist);
 miniomp_task_t *tasklist_pop_front(miniomp_tasklist_t *tasklist);
 void tasklist_dispatch_for_task(miniomp_tasklist_t *tasklist, miniomp_task_t *task,

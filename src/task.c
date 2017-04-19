@@ -52,7 +52,11 @@ miniomp_task_t *task_create(miniomp_task_t *parent, miniomp_tasklist_t *tasklist
 void task_destroy(miniomp_task_t *task)
 {
 	pthread_mutex_destroy(&task->mutex);
-	free(task->data);
+	/*
+	 * Don't free parallel's implicit task (parent = NULL) data
+	 */
+	if (task->parent && task->data)
+		free(task->data);
 	free(task);
 }
 
@@ -145,13 +149,6 @@ void tasklist_insert(miniomp_tasklist_t *tasklist, miniomp_task_t *task)
 {
 	pthread_mutex_lock(&tasklist->mutex);
 	miniomp_list_insert(&tasklist->list, &task->link);
-	pthread_mutex_unlock(&tasklist->mutex);
-}
-
-void tasklist_remove(miniomp_tasklist_t *tasklist, miniomp_task_t *task)
-{
-	pthread_mutex_lock(&tasklist->mutex);
-	miniomp_list_remove(&task->link);
 	pthread_mutex_unlock(&tasklist->mutex);
 }
 
