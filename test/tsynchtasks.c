@@ -7,7 +7,7 @@ long result = 0;
 void foo()
 {
 	#pragma omp parallel
-	//#pragma omp single
+	#pragma omp single
 	{
 		int argum = 1;
 		#pragma omp taskgroup

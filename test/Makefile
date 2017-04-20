@@ -6,22 +6,22 @@ CFLAGS   = -Wall -O -std=c99 -march=native -I. -g3
 CLIBS    = -L$(MINIOMP)/lib -lminiomp
 
 .c-omp:
-	$(CC) $(CFLAGS) $(OPENMP) $< -o $@ $(CLIBS)
+	$(CC) $(CFLAGS) $(OPENMP) $< -o $@ $(CLIBS) -lm
 
 .c-gomp:
-	$(CC) $(CFLAGS) $(OPENMP) $< -o $@
+	$(CC) $(CFLAGS) $(OPENMP) $< -o $@ -lm
 
 .c-asm:
-	$(CC) $(CFLAGS) $(OPENMP) -c -S $< -o $@ $(CLIBS)
+	$(CC) $(CFLAGS) $(OPENMP) -c -S $< -o $@ $(CLIBS) -lm
 
 .c-domp:
-	$(CC) -D_DISPLAY_ $(CFLAGS) $(OPENMP) $< -o $@ $(CLIBS) -lX11 -L/usr/X11R6/lib
+	$(CC) -D_DISPLAY_ $(CFLAGS) $(OPENMP) $< -o $@ $(CLIBS) -lX11 -L/usr/X11R6/lib -lm
 
 .c-dgomp:
-	$(CC) -D_DISPLAY_ $(CFLAGS) $(OPENMP) $< -o $@ -lX11 -L/usr/X11R6/lib
+	$(CC) -D_DISPLAY_ $(CFLAGS) $(OPENMP) $< -o $@ -lX11 -L/usr/X11R6/lib -lm
 
 .c-dasm:
-	$(CC) -D_DISPLAY_ $(CFLAGS) $(OPENMP) -c -S $< -o $@ $(CLIBS)
+	$(CC) -D_DISPLAY_ $(CFLAGS) $(OPENMP) -c -S $< -o $@ $(CLIBS) -lm
 
 clean:
 	rm -rf *-omp *-gomp *-asm *-domp *-dgomp

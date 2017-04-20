@@ -246,6 +246,7 @@ int main(int argc, char *argv[])
 	START_COUNT_TIME;
 
 	#pragma omp parallel
+	#pragma omp single
 	{
 #if _DISPLAY_
 		mandelbrot(height, width, real_min, imag_min, scale_real,
