@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 import time
 import os
@@ -37,9 +37,15 @@ def run_benchmark(program, times, num_threads):
 		total += end - start
 	return total / times
 
+def print_results(results):
+	print('{', end='')
+	for key, value in results.items():
+		print('(' + str(key) + ', ' + str(value) + ')', end='')
+	print('}')
+
 for i in threads_range:
 	results_omp[i] = run_benchmark(name_omp, N, i)
 	results_gomp[i] = run_benchmark(name_gomp, N, i)
 
-print(results_omp)
-print(results_gomp)
+print_results(results_omp)
+print_results(results_gomp)
