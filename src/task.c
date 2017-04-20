@@ -144,6 +144,8 @@ void task_run(miniomp_task_t *task)
 	task->has_run = true;
 	refs = task_ref_put(task);
 	destroy = task->descendant_count == 0 && refs == 1;
+	if (!destroy)
+		pthread_cond_broadcast(&task->cond);
 	task_unlock(task);
 
 	if (destroy)
@@ -206,14 +208,14 @@ miniomp_task_t *tasklist_pop_front(miniomp_tasklist_t *tasklist)
 bool task_meets_dispatch_flags(miniomp_task_t *task,
 			       miniomp_tasklist_dispatch_flags_t flags)
 {
-	if (!task->has_run)
+	if ((flags & TASKLIST_DISPATCH_WAIT_RUN) && !task->has_run)
 		return false;
 
-	if (flags == TASKLIST_DISPATCH_FOR_DESCENDANTS)
+	if (flags & TASKLIST_DISPATCH_FOR_DESCENDANTS)
 		return task->descendant_count == 0;
-	else if (flags == TASKLIST_DISPATCH_FOR_CHILDREN)
+	else if (flags & TASKLIST_DISPATCH_FOR_CHILDREN)
 		return task->children_count == 0;
-	else if (flags == TASKLIST_DISPATCH_FOR_TASKGROUP)
+	else if (flags & TASKLIST_DISPATCH_FOR_TASKGROUP)
 		return task->taskgroup_count == 0;
 
 	return true;

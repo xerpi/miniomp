@@ -4,7 +4,8 @@ static void parallel_implicit_barrier(miniomp_tasklist_t *tasklist,
 				      miniomp_task_t *task)
 {
 	tasklist_dispatch_for_task(tasklist, task,
-				   TASKLIST_DISPATCH_FOR_DESCENDANTS);
+				   TASKLIST_DISPATCH_FOR_DESCENDANTS |
+				   TASKLIST_DISPATCH_WAIT_RUN);
 }
 
 static void *parallel_worker_function(void *args)

@@ -11,7 +11,7 @@ long result = 0;
 void foo()
 {
 	#pragma omp parallel
-	//#pragma omp single
+	#pragma omp single // Only needed for GOMP
 	{
 		int argum = 1;
 		#pragma omp task  shared(result) firstprivate(argum)

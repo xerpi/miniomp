@@ -11,9 +11,10 @@ typedef struct miniomp_tasklist_t {
 } miniomp_tasklist_t;
 
 typedef enum miniomp_tasklist_dispatch_flags_t {
-	TASKLIST_DISPATCH_FOR_DESCENDANTS,
-	TASKLIST_DISPATCH_FOR_CHILDREN,
-	TASKLIST_DISPATCH_FOR_TASKGROUP
+	TASKLIST_DISPATCH_FOR_DESCENDANTS	= 1 << 0,
+	TASKLIST_DISPATCH_FOR_CHILDREN		= 1 << 1,
+	TASKLIST_DISPATCH_FOR_TASKGROUP		= 1 << 2,
+	TASKLIST_DISPATCH_WAIT_RUN		= 1 << 3,
 } miniomp_tasklist_dispatch_flags_t;
 
 typedef struct miniomp_task_t {
