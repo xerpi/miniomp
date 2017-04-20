@@ -26,7 +26,7 @@ def run_benchmark(program, times, num_threads):
 	for i in range(times):
 		start = time.perf_counter()
 
-		subprocess.call([program, "50000000", str(num_threads)])
+		subprocess.call([program, "100000000", "5000000", str(num_threads)])
 
 		end = time.perf_counter()
 
