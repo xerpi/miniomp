@@ -19,7 +19,7 @@ int main(int argc, char *argv[])
 		for (int i = 0; i < 5000; i++) {
 			#pragma omp task
 			{
-				for (int j = 0; j < 5000; j++) {
+				for (int j = 0; j < 500; j++) {
 					#pragma omp task
 					{
 						#pragma omp atomic

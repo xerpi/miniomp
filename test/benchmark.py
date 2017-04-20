@@ -15,27 +15,31 @@ name = sys.argv[1]
 name_omp = "./" + name + "-omp"
 name_gomp = "./" + name + "-gomp"
 N = 5
+threads_range = {1, 2, 4, 8, 16}
 
 subprocess.call(["make", "-C", "../src"])
 subprocess.call(["make", name_omp])
 subprocess.call(["make", name_gomp])
 
-total_omp = 0.0
-for i in range(N):
-	env["OMP_NUM_THREADS"] = "7"
-	start = time.perf_counter()
-	subprocess.call([name_omp], env=env)
-	end = time.perf_counter()
-	total_omp += end - start
-mean_omp = total_omp / N
+results_omp = {}
+results_gomp = {}
 
-total_gomp = 0.0
-for i in range(N):
-	start = time.perf_counter()
-	subprocess.call([name_gomp])
-	end = time.perf_counter()
-	total_gomp += end - start
-mean_gomp = total_gomp / N
+def run_benchmark(program, times, num_threads):
+	total = 0.0
+	env["OMP_NUM_THREADS"] = str(num_threads)
+	for i in range(times):
+		start = time.perf_counter()
 
-print('Mean omp: ', mean_omp)
-print('Mean gomp: ', mean_gomp)
+		subprocess.call([program], env=env)
+
+		end = time.perf_counter()
+
+		total += end - start
+	return total / times
+
+for i in threads_range:
+	results_omp[i] = run_benchmark(name_omp, N, i)
+	results_gomp[i] = run_benchmark(name_gomp, N, i)
+
+print(results_omp)
+print(results_gomp)
