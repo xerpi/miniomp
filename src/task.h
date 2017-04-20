@@ -29,6 +29,7 @@ typedef struct miniomp_task_t {
 	uint32_t children_count;
 	uint32_t taskgroup_count;
 
+	bool has_run;
 	bool in_taskgroup;
 	bool created_in_taskgroup;
 

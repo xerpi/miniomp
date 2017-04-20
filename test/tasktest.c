@@ -1,6 +1,7 @@
 #define _DEFAULT_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <ctype.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -10,20 +11,24 @@
 
 int main(int argc, char *argv[])
 {
+	uint32_t count = 0;
+
 	#pragma omp parallel
-	{for (int i = 0; i < 500; i++) {
+	#pragma omp single // Only needed for GOMP
+	{
+		for (int i = 0; i < 5000; i++) {
 			#pragma omp task
 			{
-				printf("Outer task: %d\n", i);
-				for (int j = 0; j < 500; j++) {
+				for (int j = 0; j < 5000; j++) {
 					#pragma omp task
 					{
-						printf("  Inner task: %d - %d\n", i, j);
+						#pragma omp atomic
+						count++;
 					}
 				}
 			}
 		}
 	}
 
-	printf("Done!\n");
+	printf("Count: %d\n", count);
 }

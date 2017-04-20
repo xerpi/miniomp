@@ -39,6 +39,7 @@ miniomp_task_t *task_create(miniomp_task_t *parent, miniomp_tasklist_t *tasklist
 	task->descendant_count = 0;
 	task->children_count = 0;
 	task->taskgroup_count = 0;
+	task->has_run = false;
 	task->in_taskgroup = false;
 	task->created_in_taskgroup = created_in_taskgroup;
 
@@ -140,6 +141,7 @@ void task_run(miniomp_task_t *task)
 	task->fn(task->data);
 
 	task_lock(task);
+	task->has_run = true;
 	refs = task_ref_put(task);
 	destroy = task->descendant_count == 0 && refs == 1;
 	task_unlock(task);
@@ -204,6 +206,9 @@ miniomp_task_t *tasklist_pop_front(miniomp_tasklist_t *tasklist)
 bool task_meets_dispatch_flags(miniomp_task_t *task,
 			       miniomp_tasklist_dispatch_flags_t flags)
 {
+	if (!task->has_run)
+		return false;
+
 	if (flags == TASKLIST_DISPATCH_FOR_DESCENDANTS)
 		return task->descendant_count == 0;
 	else if (flags == TASKLIST_DISPATCH_FOR_CHILDREN)

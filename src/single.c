@@ -8,6 +8,8 @@ miniomp_single_t miniomp_single;
 
 bool GOMP_single_start(void)
 {
-	printf("TBI: Entering into single, but don't know who else arrived so I proceed\n");
+	/*
+	 * Stubbed
+	 */
 	return (true);
 }
