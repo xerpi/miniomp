@@ -64,11 +64,6 @@ GOMP_taskloop(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 		}
 
 		tasklist_insert(cur_tasklist, new_task);
-
-		/*
-		 * Wake up threads waiting for the signal.
-		 */
-		pthread_cond_signal(&cur_tasklist->cond);
 	}
 
 	tasklist_dispatch_for_task(cur_tasklist, cur_task,

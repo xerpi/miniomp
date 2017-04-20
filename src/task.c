@@ -11,10 +11,8 @@ static void task_new_descendant(miniomp_task_t *task, bool is_child,
 
 	task->descendant_count++;
 
-	if (is_child) {
-		task->has_created_children = true;
+	if (is_child)
 		task->children_count++;
-	}
 
 	if (created_in_taskgroup)
 		task->taskgroup_count++;
@@ -31,18 +29,21 @@ miniomp_task_t *task_create(miniomp_task_t *parent, miniomp_tasklist_t *tasklist
 	if (!task)
 		return NULL;
 
+	memset(task, 0, sizeof(*task));
+
 	task->parent = parent;
 	task->tasklist = tasklist;
 	task->fn = fn;
 	task->data = data;
+	task->refs = 0;
 	task->descendant_count = 0;
 	task->children_count = 0;
 	task->taskgroup_count = 0;
 	task->in_taskgroup = false;
 	task->created_in_taskgroup = created_in_taskgroup;
-	task->has_created_children = false;
 
 	pthread_mutex_init(&task->mutex, NULL);
+	pthread_cond_init(&task->cond, NULL);
 
 	task_new_descendant(parent, true, created_in_taskgroup);
 
@@ -51,6 +52,7 @@ miniomp_task_t *task_create(miniomp_task_t *parent, miniomp_tasklist_t *tasklist
 
 void task_destroy(miniomp_task_t *task)
 {
+	pthread_cond_destroy(&task->cond);
 	pthread_mutex_destroy(&task->mutex);
 	/*
 	 * Don't free parallel's implicit task (parent = NULL) data
@@ -75,11 +77,20 @@ int task_unlock(miniomp_task_t *task)
 	return pthread_mutex_unlock(&task->mutex);
 }
 
+uint32_t task_ref_get(miniomp_task_t *task)
+{
+	return task->refs++;
+}
+
+uint32_t task_ref_put(miniomp_task_t *task)
+{
+	return task->refs--;
+}
+
 static void task_descendant_done_run(miniomp_task_t *task, bool is_child,
 				     bool child_created_in_taskgroup)
 {
 	bool created_in_taskgroup;
-	miniomp_tasklist_t *tasklist;
 	bool destroy = false;
 
 	if (!task)
@@ -88,41 +99,57 @@ static void task_descendant_done_run(miniomp_task_t *task, bool is_child,
 	task_lock(task);
 
 	created_in_taskgroup = task->created_in_taskgroup;
-	tasklist = task->tasklist;
 
 	if (task->descendant_count-- == 1) {
-		destroy = true;
-		pthread_cond_signal(&tasklist->cond);
+		if (task->refs == 0)
+			destroy = true;
 	}
 
-	if (is_child) {
-		if (task->children_count-- == 1)
-			pthread_cond_signal(&task->tasklist->cond);
-	}
+	if (is_child)
+		task->children_count--;
 
-	if (child_created_in_taskgroup) {
-		if (task->taskgroup_count-- == 1)
-			pthread_cond_signal(&task->tasklist->cond);
-	}
+	if (child_created_in_taskgroup)
+		task->taskgroup_count--;
 
-	task_unlock(task);
+	pthread_cond_broadcast(&task->cond);
 
 	task_descendant_done_run(task->parent, false, created_in_taskgroup);
 
+	task_unlock(task);
+
 	if (destroy)
 		task_destroy(task);
+
 }
 
 void task_run(miniomp_task_t *task)
 {
+	uint32_t refs;
+	bool destroy;
 	miniomp_specific_t *specific = miniomp_get_specific();
 	miniomp_task_t *old_task = specific->current_task;
+	miniomp_task_t *parent = task->parent;
+	bool created_in_taskgroup = task->created_in_taskgroup;
 
 	specific->current_task = task;
-	task->fn(task->data);
-	specific->current_task = old_task;
 
-	task_descendant_done_run(task->parent, true, task->created_in_taskgroup);
+	task_lock(task);
+	task_ref_get(task);
+	task_unlock(task);
+
+	task->fn(task->data);
+
+	task_lock(task);
+	refs = task_ref_put(task);
+	destroy = task->descendant_count == 0 && refs == 1;
+	task_unlock(task);
+
+	if (destroy)
+		task_destroy(task);
+
+	task_descendant_done_run(parent, true, created_in_taskgroup);
+
+	specific->current_task = old_task;
 }
 
 miniomp_tasklist_t *tasklist_create(void)
@@ -133,7 +160,6 @@ miniomp_tasklist_t *tasklist_create(void)
 
 	miniomp_list_init(&tasklist->list);
 	pthread_mutex_init(&tasklist->mutex, NULL);
-	pthread_cond_init(&tasklist->cond, NULL);
 
 	return tasklist;
 }
@@ -141,7 +167,6 @@ miniomp_tasklist_t *tasklist_create(void)
 void tasklist_destroy(miniomp_tasklist_t *tasklist)
 {
 	pthread_mutex_destroy(&tasklist->mutex);
-	pthread_cond_destroy(&tasklist->cond);
 	free(tasklist);
 }
 
@@ -179,20 +204,14 @@ miniomp_task_t *tasklist_pop_front(miniomp_tasklist_t *tasklist)
 bool task_meets_dispatch_flags(miniomp_task_t *task,
 			       miniomp_tasklist_dispatch_flags_t flags)
 {
-	bool ret = false;
-
-	task_lock(task);
-
 	if (flags == TASKLIST_DISPATCH_FOR_DESCENDANTS)
-		ret = task->descendant_count == 0;
+		return task->descendant_count == 0;
 	else if (flags == TASKLIST_DISPATCH_FOR_CHILDREN)
-		ret = task->children_count == 0;
+		return task->children_count == 0;
 	else if (flags == TASKLIST_DISPATCH_FOR_TASKGROUP)
-		ret = task->taskgroup_count == 0;
+		return task->taskgroup_count == 0;
 
-	task_unlock(task);
-
-	return ret;
+	return true;
 }
 
 void tasklist_dispatch_for_task(miniomp_tasklist_t *tasklist, miniomp_task_t *task,
@@ -205,38 +224,24 @@ void tasklist_dispatch_for_task(miniomp_tasklist_t *tasklist, miniomp_task_t *ta
 		dispatch_task = tasklist_pop_front(tasklist);
 
 		valid = task_is_valid(dispatch_task);
-		if (valid) {
-			bool destroy;
-
+		if (valid)
 			task_run(dispatch_task);
 
-			task_lock(dispatch_task);
-			destroy = !dispatch_task->has_created_children;
-			task_unlock(dispatch_task);
-
-			if (destroy)
-				task_destroy(dispatch_task);
-		}
-
-		pthread_mutex_lock(&tasklist->mutex);
+		task_lock(task);
 
 		if (task_meets_dispatch_flags(task, flags)) {
-			pthread_mutex_unlock(&tasklist->mutex);
-			pthread_cond_broadcast(&tasklist->cond);
+			task_unlock(task);
 			break;
-		}
-
-		if (!valid) {
-			pthread_cond_wait(&tasklist->cond, &tasklist->mutex);
+		} else if (!valid) {
+			pthread_cond_wait(&task->cond, &task->mutex);
 
 			if (task_meets_dispatch_flags(task, flags)) {
-				pthread_mutex_unlock(&tasklist->mutex);
-				pthread_cond_broadcast(&tasklist->cond);
+				task_unlock(task);
 				break;
 			}
 		}
 
-		pthread_mutex_unlock(&tasklist->mutex);
+		task_unlock(task);
 	}
 }
 
@@ -269,7 +274,7 @@ GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 	void *task_data;
 	miniomp_specific_t *specific = miniomp_get_specific();
 	miniomp_task_t *cur_task = specific->current_task;
-	miniomp_tasklist_t *cur_tasklist = cur_task->tasklist;
+	miniomp_tasklist_t *tasklist = cur_task->tasklist;
 
 	dbgprintf("GOMP_task called, size: %ld, align: %ld\n", arg_size, arg_align);
 
@@ -283,18 +288,12 @@ GOMP_task(void (*fn)(void *), void *data, void (*cpyfn)(void *, void *),
 	else
 		memcpy(task_data, data, arg_size);
 
-	new_task = task_create(cur_task, cur_tasklist, fn, task_data,
-			       cur_task->in_taskgroup);
+	new_task = task_create(cur_task, tasklist, fn, task_data, cur_task->in_taskgroup);
 	if (!new_task) {
 		free(task_data);
 		errprintf("Error: can't allocate memory for the task\n");
 		return;
 	}
 
-	tasklist_insert(cur_tasklist, new_task);
-
-	/*
-	 * Wake up threads waiting for the signal.
-	 */
-	pthread_cond_signal(&cur_tasklist->cond);
+	tasklist_insert(tasklist, new_task);
 }

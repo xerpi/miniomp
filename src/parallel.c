@@ -85,6 +85,8 @@ GOMP_parallel(void (*fn)(void *), void *data, unsigned num_threads,
 		goto error_implicit_task_create;
 	}
 
+	task_ref_get(implicit_task);
+
 	tasklist_insert(tasklist, implicit_task);
 
 	/*
@@ -111,6 +113,9 @@ GOMP_parallel(void (*fn)(void *), void *data, unsigned num_threads,
 	for (i = 0; i < num_threads; i++) {
 		pthread_join(threads[i], NULL);
 	}
+
+	task_ref_put(implicit_task);
+	task_destroy(implicit_task);
 
 	/* fallthrough */
 error_implicit_task_create:

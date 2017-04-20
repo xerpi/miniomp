@@ -14,15 +14,27 @@ int main(int argc, char *argv[])
 	{
 		#pragma omp taskgroup
 		{
-			for (int i = 0; i < 5; i++) {
+			for (int i = 0; i < 50; i++) {
 				#pragma omp task
 				{
-					printf("Task: %d\n", i);
+					printf("Group 1 task: %d\n", i);
 				}
 			}
 		}
 
-		printf("After taskgroup!\n");
+		printf("After taskgroup 1!\n");
+
+		#pragma omp taskgroup
+		{
+			for (int i = 0; i < 50; i++) {
+				#pragma omp task
+				{
+					printf("Group 2 task: %d\n", i);
+				}
+			}
+		}
+
+		printf("After taskgroup 2!\n");
 
 	}
 

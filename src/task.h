@@ -8,7 +8,6 @@
 typedef struct miniomp_tasklist_t {
 	miniomp_list_t list;
 	pthread_mutex_t mutex;
-	pthread_cond_t cond;
 } miniomp_tasklist_t;
 
 typedef enum miniomp_tasklist_dispatch_flags_t {
@@ -24,15 +23,17 @@ typedef struct miniomp_task_t {
 	void (*fn)(void *);
 	void *data;
 
+	uint32_t refs;
+
 	uint32_t descendant_count;
 	uint32_t children_count;
 	uint32_t taskgroup_count;
 
 	bool in_taskgroup;
 	bool created_in_taskgroup;
-	bool has_created_children;
 
 	pthread_mutex_t mutex;
+	pthread_cond_t cond;
 
 	miniomp_list_t link;
 } miniomp_task_t;
@@ -43,6 +44,8 @@ void task_destroy(miniomp_task_t *task);
 bool task_is_valid(const miniomp_task_t *task);
 int task_lock(miniomp_task_t *task);
 int task_unlock(miniomp_task_t *task);
+uint32_t task_ref_get(miniomp_task_t *task);
+uint32_t task_ref_put(miniomp_task_t *task);
 void task_run(miniomp_task_t *task);
 
 miniomp_tasklist_t *tasklist_create(void);
